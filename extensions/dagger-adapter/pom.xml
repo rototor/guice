@@ -5,7 +5,7 @@
   <parent>
     <groupId>com.google.inject.extensions</groupId>
     <artifactId>extensions-parent</artifactId>
-    <version>4.1.1-SNAPSHOT</version>
+    <version>4.2.1-SNAPSHOT</version>
   </parent>
   <artifactId>guice-dagger-adapter</artifactId>
   <name>Google Guice - Extensions - Dagger Adapter</name>
@@ -16,4 +16,18 @@
       <version>2.4</version>
     </dependency>
   </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Automatic-Module-Name>com.google.guice.extensions.daggeradapter</Automatic-Module-Name>
+            </manifestEntries>
+          </archive>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
 </project>

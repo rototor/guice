@@ -6,7 +6,7 @@
   <parent>
     <groupId>com.google.inject.extensions</groupId>
     <artifactId>extensions-parent</artifactId>
-    <version>4.1.1-SNAPSHOT</version>
+    <version>4.2.1-SNAPSHOT</version>
   </parent>
 
   <artifactId>guice-throwingproviders</artifactId>
@@ -21,6 +21,16 @@
           <excludes>
             <exclude>**/TestScope*</exclude>
           </excludes>
+        </configuration>
+      </plugin>
+      <plugin>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Automatic-Module-Name>com.google.guice.extensions.throwingproviders</Automatic-Module-Name>
+            </manifestEntries>
+          </archive>
         </configuration>
       </plugin>
     </plugins>
