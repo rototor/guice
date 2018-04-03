@@ -153,7 +153,7 @@ See the Apache License Version 2.0 for the specific language governing permissio
       <dependency>
         <groupId>org.ow2.asm</groupId>
         <artifactId>asm</artifactId>
-        <version>6.1</version>
+        <version>6.1.1</version>
       </dependency>
       <dependency>
         <groupId>cglib</groupId>
