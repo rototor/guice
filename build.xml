@@ -280,7 +280,7 @@
     </munge>
     <replace file="build/no_aop/common.xml" value="">
       <replacetoken><![CDATA[<zipfileset 
-src="${common.basedir}/lib/build/asm-6.1.1.jar"/>]]></replacetoken>
+src="${common.basedir}/lib/build/asm-6.2.jar"/>]]></replacetoken>
     </replace>
     <replace file="build/no_aop/common.xml" value="">
       <replacetoken><![CDATA[<zipfileset src="${common.basedir}/lib/build/cglib-3.2.6.jar"/>]]></replacetoken>
