@@ -27,7 +27,7 @@ See the Apache License Version 2.0 for the specific language governing permissio
 
   <groupId>com.google.inject</groupId>
   <artifactId>guice-parent</artifactId>
-  <version>4.2.1-rototor1</version>
+  <version>4.2.1-rototor2</version>
 
   <name>Google Guice</name>
 
@@ -391,7 +391,7 @@ See the Apache License Version 2.0 for the specific language governing permissio
         </plugin>
         <plugin>
           <artifactId>maven-javadoc-plugin</artifactId>
-          <version>3.0.0</version>
+          <version>3.0.1</version>
           <executions>
             <execution>
               <phase>package</phase>
