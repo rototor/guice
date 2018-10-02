@@ -116,11 +116,11 @@
         <pathelement location="${build.dir}/dist/guice-${version}.jar"/>
         <pathelement location="lib/javax.inject.jar"/>
         <pathelement location="lib/aopalliance.jar"/>
-        <pathelement location="lib/guava-19.0.jar"/>
-        <pathelement location="lib/build/guava-testlib-19.0.jar"/>
+        <pathelement location="lib/guava-25.1-android.jar"/>
+        <pathelement location="lib/build/guava-testlib-25.1-android.jar"/>
         <pathelement location="lib/build/junit.jar"/>
         <pathelement location="lib/build/servlet-api-2.5.jar"/>
-        <pathelement location="lib/build/truth-0.36.jar"/>
+        <pathelement location="lib/build/truth-0.41.jar"/>
         <pathelement location="lib/build/easymock.jar"/>
         <pathelement location="lib/build/javax.inject-tck.jar"/>
         <pathelement location="lib/build/bnd-0.0.384.jar"/>
@@ -136,7 +136,7 @@
     </java>
   </target>
 
-  <property name="old.api" value="4.2"/>
+  <property name="old.api" value="4.2.1"/>
   <property name="new.api" value="latest"/>
   <target name="jdiff" depends="compile">
     <property name="jdiff.home" value="lib/build/jdiff"/>
@@ -279,13 +279,13 @@
       <arg value="-DNO_AOP" />
     </munge>
     <replace file="build/no_aop/common.xml" value="">
-      <replacetoken><![CDATA[<zipfileset src="${common.basedir}/lib/build/asm-6.0.jar"/>]]></replacetoken>
+      <replacetoken><![CDATA[<zipfileset src="${common.basedir}/lib/build/asm-6.2.1.jar"/>]]></replacetoken>
     </replace>
     <replace file="build/no_aop/common.xml" value="">
-      <replacetoken><![CDATA[<zipfileset src="${common.basedir}/lib/build/cglib-3.2.6.jar"/>]]></replacetoken>
+      <replacetoken><![CDATA[<zipfileset src="${common.basedir}/lib/build/cglib-3.2.8.jar"/>]]></replacetoken>
     </replace>
     <replace file="build/no_aop/common.xml" value="">
-      <replacetoken><![CDATA[<zipfileset src="${common.basedir}/lib/build/cglib-3.2.6.jar"><include name="LICENSE"/><include name="NOTICE"/></zipfileset>]]></replacetoken>
+      <replacetoken><![CDATA[<zipfileset src="${common.basedir}/lib/build/cglib-3.2.8.jar"><include name="LICENSE"/><include name="NOTICE"/></zipfileset>]]></replacetoken>
     </replace>
     <replace file="build/no_aop/common.xml" value='Bundle-Name" value="$${ant.project.name} (no_aop)'>
       <replacetoken><![CDATA[Bundle-Name" value="${ant.project.name}]]></replacetoken>

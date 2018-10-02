@@ -38,8 +38,8 @@ public class CheckedProviderSubjectTest {
     CheckedProvider<String> provider = CheckedProviders.of(StringCheckedProvider.class, unexpected);
     String message =
         String.format(
-            "value provided by <%s>: Not true that <%s> is equal to <%s>",
-            getReturningProviderName(unexpected), unexpected, expected);
+            "value provided by <%s>\nexpected: %s\nbut was : %s",
+            getReturningProviderName(unexpected), expected, unexpected);
 
     expectWhenTesting().that(provider).providedValue().isEqualTo(expected);
     assertThat(expect.getFailure()).hasMessageThat().isEqualTo(message);
@@ -78,11 +78,13 @@ public class CheckedProviderSubjectTest {
         CheckedProviders.throwing(StringCheckedProvider.class, unexpected);
     String message =
         String.format(
-            "exception thrown by <%s>: Not true that <%s> is an instance of <%s>. "
-                + "It is an instance of <%s>",
+            "exception thrown by <%s>\n"
+                + "expected instance of: %s\n"
+                + "but was instance of : %s\n"
+                + "with value          : %s",
             getThrowingProviderName(UnsupportedOperationException.class.getName()),
-            UnsupportedOperationException.class.getName(),
             SummerException.class.getName(),
+            UnsupportedOperationException.class.getName(),
             UnsupportedOperationException.class.getName());
 
     expectWhenTesting().that(provider).thrownException().isInstanceOf(expected);
