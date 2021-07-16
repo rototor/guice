@@ -19,7 +19,6 @@ package com.google.inject.servlet;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
-import com.google.common.collect.Maps.EntryTransformer;
 import com.google.inject.Binding;
 import com.google.inject.Injector;
 import com.google.inject.Key;
@@ -77,7 +76,7 @@ public class ServletScopes {
           // request is in progress.
           if (null == GuiceFilter.localContext.get()) {
 
-            // NOTE(dhanji): We don't need to synchronize on the scope map
+            // NOTE(user): We don't need to synchronize on the scope map
             // unlike the HTTP request because we're the only ones who have
             // a reference to it, and it is only available via a threadlocal.
             Context context = requestScopeContext.get();
@@ -363,14 +362,7 @@ public class ServletScopes {
     // Copy the seed values into our local scope map.
     final Context context = new Context();
     Map<Key<?>, Object> validatedAndCanonicalizedMap =
-        Maps.transformEntries(
-            seedMap,
-            new EntryTransformer<Key<?>, Object, Object>() {
-              @Override
-              public Object transformEntry(Key<?> key, Object value) {
-                return validateAndCanonicalizeValue(key, value);
-              }
-            });
+        Maps.transformEntries(seedMap, ServletScopes::validateAndCanonicalizeValue);
     context.map.putAll(validatedAndCanonicalizedMap);
     return new RequestScoper() {
       @Override
@@ -395,22 +387,18 @@ public class ServletScopes {
       return NullObject.INSTANCE;
     }
 
-    if (!key.getTypeLiteral().getRawType().isInstance(object)) {
-      throw new IllegalArgumentException(
-          "Value["
-              + object
-              + "] of type["
-              + object.getClass().getName()
-              + "] is not compatible with key["
-              + key
-              + "]");
-    }
+    Preconditions.checkArgument(
+        key.getTypeLiteral().getRawType().isInstance(object),
+        "Value[%s] of type[%s] is not compatible with key[%s]",
+        object,
+        object.getClass().getName(),
+        key);
 
     return object;
   }
 
   private static class Context implements RequestScoper {
-    final Map<Key, Object> map = Maps.newHashMap();
+    final Map<Key<?>, Object> map = Maps.newHashMap();
 
     // Synchronized to prevent two threads from using the same request
     // scope concurrently.
@@ -437,17 +425,10 @@ public class ServletScopes {
     }
   }
 
-  private static final <T> Callable<T> wrap(
-      final Callable<T> delegate, final RequestScoper requestScoper) {
-    return new Callable<T>() {
-      @Override
-      public T call() throws Exception {
-        RequestScoper.CloseableScope scope = requestScoper.open();
-        try {
-          return delegate.call();
-        } finally {
-          scope.close();
-        }
+  private static <T> Callable<T> wrap(Callable<T> delegate, RequestScoper requestScoper) {
+    return () -> {
+      try (RequestScoper.CloseableScope scope = requestScoper.open()) {
+        return delegate.call();
       }
     };
   }

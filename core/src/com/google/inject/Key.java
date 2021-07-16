@@ -27,8 +27,8 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.Type;
 
 /**
- * Binding key consisting of an injection type and an optional annotation. Matches the type and
- * annotation at a point of injection.
+ * Guice uses Key objects to identify a dependency that can be resolved by the Guice {@link
+ * Injector}. A Guice key consists of an injection type and an optional annotation.
  *
  * <p>For example, {@code Key.get(Service.class, Transactional.class)} will match:
  *
@@ -141,12 +141,20 @@ public class Key<T> {
     return typeLiteral;
   }
 
-  /** Gets the annotation type. */
+  /** Gets the annotation type. Will be {@code null} if this key lacks an annotation. */
   public final Class<? extends Annotation> getAnnotationType() {
     return annotationStrategy.getAnnotationType();
   }
 
-  /** Gets the annotation. */
+  /**
+   * Gets the annotation instance if available. Will be {@code null} if this key lacks an annotation
+   * <i>or</i> the key was constructed with a {@code Class<Annotation>}.
+   *
+   * <p><b>Warning:</b> this can return null even if this key is annotated. To check whether a
+   * {@code Key} has an annotation use {@link #hasAnnotationType} instead.
+   */
+  // TODO(diamondm) consider deprecating this in favor of a method that ISEs if hasAnnotationType()
+  // is true but this would return null.
   public final Annotation getAnnotation() {
     return annotationStrategy.getAnnotation();
   }
@@ -226,17 +234,17 @@ public class Key<T> {
 
   /** Gets a key for an injection type. */
   public static Key<?> get(Type type) {
-    return new Key<Object>(type, NullAnnotationStrategy.INSTANCE);
+    return new Key<>(type, NullAnnotationStrategy.INSTANCE);
   }
 
   /** Gets a key for an injection type and an annotation type. */
   public static Key<?> get(Type type, Class<? extends Annotation> annotationType) {
-    return new Key<Object>(type, strategyFor(annotationType));
+    return new Key<>(type, strategyFor(annotationType));
   }
 
   /** Gets a key for an injection type and an annotation. */
   public static Key<?> get(Type type, Annotation annotation) {
-    return new Key<Object>(type, strategyFor(annotation));
+    return new Key<>(type, strategyFor(annotation));
   }
 
   /** Gets a key for an injection type. */
@@ -260,8 +268,8 @@ public class Key<T> {
    *
    * @since 3.0
    */
-  public <T> Key<T> ofType(Class<T> type) {
-    return new Key<T>(type, annotationStrategy);
+  public <U> Key<U> ofType(Class<U> type) {
+    return new Key<>(type, annotationStrategy);
   }
 
   /**
@@ -270,7 +278,7 @@ public class Key<T> {
    * @since 3.0
    */
   public Key<?> ofType(Type type) {
-    return new Key<Object>(type, annotationStrategy);
+    return new Key<>(type, annotationStrategy);
   }
 
   /**
@@ -278,8 +286,32 @@ public class Key<T> {
    *
    * @since 3.0
    */
-  public <T> Key<T> ofType(TypeLiteral<T> type) {
-    return new Key<T>(type, annotationStrategy);
+  public <U> Key<U> ofType(TypeLiteral<U> type) {
+    return new Key<U>(type, annotationStrategy);
+  }
+
+  /**
+   * Returns a new key of the same type with the specified annotation.
+   *
+   * <p>This is equivalent to {@code Key.get(key.getTypeLiteral(), annotation)} but may be more
+   * convenient to use in certain cases.
+   *
+   * @since 5.0
+   */
+  public Key<T> withAnnotation(Class<? extends Annotation> annotationType) {
+    return new Key<T>(typeLiteral, strategyFor(annotationType));
+  }
+
+  /**
+   * Returns a new key of the same type with the specified annotation.
+   *
+   * <p>This is equivalent to {@code Key.get(key.getTypeLiteral(), annotation)} but may be more
+   * convenient to use in certain cases.
+   *
+   * @since 5.0
+   */
+  public Key<T> withAnnotation(Annotation annotation) {
+    return new Key<T>(typeLiteral, strategyFor(annotation));
   }
 
   /**

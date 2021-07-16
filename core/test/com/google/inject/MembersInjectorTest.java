@@ -21,7 +21,6 @@ import static com.google.inject.Asserts.assertContains;
 import com.google.inject.internal.Annotations;
 import com.google.inject.name.Names;
 import com.google.inject.util.Providers;
-import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -160,9 +159,7 @@ public class MembersInjectorTest extends TestCase {
       membersInjector.injectMembers(new InjectionFailure());
       fail();
     } catch (ProvisionException expected) {
-      assertContains(
-          expected.getMessage(),
-          "1) Error injecting method, java.lang.ClassCastException: whoops, failure #1");
+      assertContains(expected.getMessage(), "ClassCastException: whoops, failure #1");
     }
   }
 
@@ -196,14 +193,14 @@ public class MembersInjectorTest extends TestCase {
           new AbstractModule() {
             @Override
             protected void configure() {
-              bind(MembersInjector.class).toProvider(Providers.<MembersInjector>of(null));
+              bind(MembersInjector.class).toProvider(Providers.of(null));
             }
           });
       fail();
     } catch (CreationException expected) {
       assertContains(
           expected.getMessage(),
-          "1) Binding to core guice framework type is not allowed: MembersInjector.");
+          "Binding to core guice framework type is not allowed: MembersInjector.");
     }
 
     try {
@@ -219,7 +216,7 @@ public class MembersInjectorTest extends TestCase {
     } catch (CreationException expected) {
       assertContains(
           expected.getMessage(),
-          "1) Binding to core guice framework type is not allowed: MembersInjector.");
+          "Binding to core guice framework type is not allowed: MembersInjector.");
     }
   }
 
@@ -230,12 +227,13 @@ public class MembersInjectorTest extends TestCase {
     } catch (ConfigurationException expected) {
       assertContains(
           expected.getMessage(),
-          "1) No implementation for " + Unimplemented.class.getName() + " was bound.",
-          "while locating " + Unimplemented.class.getName(),
-          "for field at " + A.class.getName() + ".t(MembersInjectorTest.java:",
-          "while locating com.google.inject.MembersInjector<",
-          "for field at " + InjectsBrokenMembersInjector.class.getName() + ".aMembersInjector(",
-          "while locating " + InjectsBrokenMembersInjector.class.getName());
+          "No implementation for MembersInjectorTest$Unimplemented was bound.",
+          "MembersInjectorTest$A.t(MembersInjectorTest.java:",
+          "for field t",
+          "at MembersInjectorTest$InjectsBrokenMembersInjector.aMembersInjector("
+              + "MembersInjectorTest.java:",
+          "for field aMembersInjector",
+          "while locating MembersInjectorTest$InjectsBrokenMembersInjector");
     }
   }
 
@@ -280,9 +278,8 @@ public class MembersInjectorTest extends TestCase {
     } catch (ConfigurationException expected) {
       assertContains(
           expected.getMessage(),
-          "1) No implementation for com.google.inject.MembersInjector<java.lang.String> "
-              + "annotated with @com.google.inject.name.Named(value="
-              + Annotations.memberValueString("foo")
+          "No implementation for MembersInjector<String> annotated with @Named("
+              + Annotations.memberValueString("value", "foo")
               + ") was bound.");
     }
   }
@@ -311,13 +308,7 @@ public class MembersInjectorTest extends TestCase {
       // verify that other callback can be finished on a separate thread
       AbstractParallelMemberInjectionCallback otherCallback =
           Executors.newSingleThreadExecutor()
-              .submit(
-                  new Callable<AbstractParallelMemberInjectionCallback>() {
-                    @Override
-                    public AbstractParallelMemberInjectionCallback call() throws Exception {
-                      return injector.getInstance(otherCallbackClass);
-                    }
-                  })
+              .submit(() -> injector.getInstance(otherCallbackClass))
               .get(DEADLOCK_TIMEOUT_SECONDS, TimeUnit.SECONDS);
       assertTrue(otherCallback.called);
 
@@ -325,13 +316,7 @@ public class MembersInjectorTest extends TestCase {
         // other thread would wait for callback to finish on this thread first
         Executors.newSingleThreadExecutor()
             .submit(
-                new Callable<Object>() {
-                  @Override
-                  public Object call() throws Exception {
-                    return injector.getInstance(
-                        AbstractParallelMemberInjectionCallback.this.getClass());
-                  }
-                })
+                () -> injector.getInstance(AbstractParallelMemberInjectionCallback.this.getClass()))
             .get(DEADLOCK_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         fail();
       } catch (TimeoutException expected) {

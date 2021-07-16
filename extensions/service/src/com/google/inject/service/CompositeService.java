@@ -24,7 +24,6 @@ import com.google.inject.Injector;
 import com.google.inject.Key;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
@@ -85,7 +84,7 @@ public class CompositeService {
           tasks.add(injector.getInstance(service).start());
         }
 
-        return futureGet(tasks, State.STARTED);
+        return new FutureTask<>(() -> waitForTasks(tasks, State.STARTED));
       }
 
       @Override
@@ -95,7 +94,7 @@ public class CompositeService {
           tasks.add(injector.getInstance(service).stop());
         }
 
-        return futureGet(tasks, State.STOPPED);
+        return new FutureTask<>(() -> waitForTasks(tasks, State.STOPPED));
       }
 
       @Override
@@ -105,25 +104,19 @@ public class CompositeService {
     };
   }
 
-  private FutureTask<Service.State> futureGet(
-      final List<Future<Service.State>> tasks, final Service.State state) {
-    return new FutureTask<Service.State>(
-        new Callable<Service.State>() {
-          @Override
-          public Service.State call() {
-            boolean ok = true;
-            for (Future<Service.State> task : tasks) {
-              try {
-                ok = state == task.get();
-              } catch (InterruptedException e) {
-                return compositeState = Service.State.FAILED;
-              } catch (ExecutionException e) {
-                return compositeState = Service.State.FAILED;
-              }
-            }
+  private Service.State waitForTasks(List<Future<Service.State>> tasks, Service.State state) {
+    boolean ok = true;
+    for (Future<Service.State> task : tasks) {
+      try {
+        ok = state == task.get();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return compositeState = Service.State.FAILED;
+      } catch (ExecutionException e) {
+        return compositeState = Service.State.FAILED;
+      }
+    }
 
-            return compositeState = ok ? state : Service.State.FAILED;
-          }
-        });
+    return compositeState = ok ? state : Service.State.FAILED;
   }
 }

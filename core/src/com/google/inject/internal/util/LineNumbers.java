@@ -42,7 +42,9 @@ import org.objectweb.asm.Opcodes;
  */
 final class LineNumbers {
 
-  private final Class type;
+  private static final int ASM_API_LEVEL = Opcodes.ASM9;
+
+  private final Class<?> type;
   private final Map<String, Integer> lines = Maps.newHashMap();
   private String source;
   private int firstLine = Integer.MAX_VALUE;
@@ -51,17 +53,24 @@ final class LineNumbers {
    * Reads line number information from the given class, if available.
    *
    * @param type the class to read line number information from
-   * @throws IllegalArgumentException if the bytecode for the class cannot be found
-   * @throws java.io.IOException if an error occurs while reading bytecode
    */
-  public LineNumbers(Class type) throws IOException {
+  public LineNumbers(Class<?> type) throws IOException {
     this.type = type;
 
     if (!type.isArray()) {
-      InputStream in = type.getResourceAsStream("/" + type.getName().replace('.', '/') + ".class");
+      InputStream in = null;
+      try {
+        in = type.getResourceAsStream("/" + type.getName().replace('.', '/') + ".class");
+      } catch (IllegalStateException ignored) {
+        // Some classloaders throw IllegalStateException when they can't load a resource.
+      }
       if (in != null) {
         try {
           new ClassReader(in).accept(new LineNumberReader(), ClassReader.SKIP_FRAMES);
+        } catch (UnsupportedOperationException ignored) {
+          // We may be trying to inspect classes that were compiled with a more recent version
+          // of javac than our ASM supports.  If that happens, just ignore the class and don't
+          // capture line numbers.
         } finally {
           try {
             in.close();
@@ -106,29 +115,21 @@ final class LineNumbers {
 
   private String memberKey(Member member) {
     checkNotNull(member, "member");
-
-    /*if[AOP]*/
     if (member instanceof Field) {
       return member.getName();
-
     } else if (member instanceof Method) {
       return member.getName() + org.objectweb.asm.Type.getMethodDescriptor((Method) member);
 
     } else if (member instanceof Constructor) {
       StringBuilder sb = new StringBuilder().append("<init>(");
-      for (Class param : ((Constructor) member).getParameterTypes()) {
+      for (Class<?> param : ((Constructor<?>) member).getParameterTypes()) {
         sb.append(org.objectweb.asm.Type.getDescriptor(param));
       }
       return sb.append(")V").toString();
-
     } else {
       throw new IllegalArgumentException(
           "Unsupported implementation class for Member, " + member.getClass());
     }
-    /*end[AOP]*/
-    /*if[NO_AOP]
-    return "<NO_MEMBER_KEY>";
-    end[NO_AOP]*/
   }
 
   private class LineNumberReader extends ClassVisitor {
@@ -138,7 +139,7 @@ final class LineNumbers {
     private String name;
 
     LineNumberReader() {
-      super(Opcodes.ASM6);
+      super(ASM_API_LEVEL);
     }
 
     @Override
@@ -197,7 +198,7 @@ final class LineNumbers {
 
     class LineNumberMethodVisitor extends MethodVisitor {
       LineNumberMethodVisitor() {
-        super(Opcodes.ASM6);
+        super(ASM_API_LEVEL);
       }
 
       @Override
@@ -228,7 +229,7 @@ final class LineNumbers {
 
     class LineNumberAnnotationVisitor extends AnnotationVisitor {
       LineNumberAnnotationVisitor() {
-        super(Opcodes.ASM6);
+        super(ASM_API_LEVEL);
       }
 
       @Override

@@ -16,9 +16,7 @@
 
 package com.google.inject;
 
-import static com.google.inject.Asserts.asModuleChain;
 import static com.google.inject.Asserts.assertContains;
-import static com.google.inject.Asserts.getDeclaringSourcePart;
 import static com.google.inject.name.Names.named;
 import static java.lang.annotation.RetentionPolicy.RUNTIME;
 
@@ -46,7 +44,6 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Callable;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
@@ -162,12 +159,13 @@ public class ScopesTest extends TestCase {
     } catch (CreationException expected) {
       assertContains(
           expected.getMessage(),
-          A.class.getName() + " is annotated with " + Singleton.class.getName(),
-          "but scope annotations are not supported for abstract types.",
-          "at " + A.class.getName() + ".class(ScopesTest.java:");
+          "ScopesTest$A is annotated with Singleton, but scope annotations are not supported for"
+              + " abstract types.",
+          "at ScopesTest$A.class");
     }
   }
 
+  @SuppressWarnings("InjectScopeAnnotationOnInterfaceOrAbstractClass") // for testing
   @Singleton
   interface A {}
 
@@ -176,6 +174,7 @@ public class ScopesTest extends TestCase {
   @Retention(RUNTIME)
   @interface Component {}
 
+  @SuppressWarnings("InjectScopeAnnotationOnInterfaceOrAbstractClass") // for testing
   @Component
   @Singleton
   interface ComponentAnnotationTest {}
@@ -199,12 +198,13 @@ public class ScopesTest extends TestCase {
     } catch (ConfigurationException expected) {
       assertContains(
           expected.getMessage(),
-          D.class.getName() + " is annotated with " + Singleton.class.getName(),
-          "but scope annotations are not supported for abstract types.",
-          "at " + D.class.getName() + ".class(ScopesTest.java:");
+          "ScopesTest$D is annotated with Singleton, but scope annotations are not supported for"
+              + " abstract types.",
+          "at ScopesTest$D.class");
     }
   }
 
+  @SuppressWarnings("InjectScopeAnnotationOnInterfaceOrAbstractClass") // for testing
   @Singleton
   @ImplementedBy(DImpl.class)
   interface D {}
@@ -218,12 +218,13 @@ public class ScopesTest extends TestCase {
     } catch (ConfigurationException expected) {
       assertContains(
           expected.getMessage(),
-          E.class.getName() + " is annotated with " + Singleton.class.getName(),
-          "but scope annotations are not supported for abstract types.",
-          "at " + E.class.getName() + ".class(ScopesTest.java:");
+          "ScopesTest$E is annotated with Singleton, but scope annotations are not supported for"
+              + " abstract types.",
+          "at ScopesTest$E.class");
     }
   }
 
+  @SuppressWarnings("InjectScopeAnnotationOnInterfaceOrAbstractClass") // for testing
   @Singleton
   @ProvidedBy(EProvider.class)
   interface E {}
@@ -249,11 +250,9 @@ public class ScopesTest extends TestCase {
     } catch (CreationException expected) {
       assertContains(
           expected.getMessage(),
-          "1) No scope is bound to " + CustomScoped.class.getName(),
-          "at " + getClass().getName(),
-          getDeclaringSourcePart(getClass()),
-          "2) No scope is bound to " + CustomScoped.class.getName(),
-          "at " + C.class.getName() + ".class");
+          "No scope is bound to ScopesTest$CustomScoped.",
+          "1  : ScopesTest$5.configure",
+          "2  : ScopesTest$C.class");
     }
   }
 
@@ -334,11 +333,9 @@ public class ScopesTest extends TestCase {
     } catch (CreationException expected) {
       assertContains(
           expected.getMessage(),
-          "1) Please annotate "
-              + NotRuntimeRetainedScoped.class.getName()
-              + " with @Retention(RUNTIME).",
-          "at " + InnerRuntimeModule.class.getName() + getDeclaringSourcePart(getClass()),
-          asModuleChain(OuterRuntimeModule.class, InnerRuntimeModule.class));
+          "Please annotate ScopesTest$NotRuntimeRetainedScoped with @Retention(RUNTIME).",
+          "at ScopesTest$InnerRuntimeModule.configure",
+          "ScopesTest$OuterRuntimeModule -> ScopesTest$InnerRuntimeModule");
     }
   }
 
@@ -363,9 +360,9 @@ public class ScopesTest extends TestCase {
     } catch (CreationException expected) {
       assertContains(
           expected.getMessage(),
-          "1) Please annotate " + Deprecated.class.getName() + " with @ScopeAnnotation.",
-          "at " + InnerDeprecatedModule.class.getName() + getDeclaringSourcePart(getClass()),
-          asModuleChain(OuterDeprecatedModule.class, InnerDeprecatedModule.class));
+          "Please annotate Deprecated with @ScopeAnnotation.",
+          "at ScopesTest$InnerDeprecatedModule.configure",
+          "installed by: ScopesTest$OuterDeprecatedModule -> ScopesTest$InnerDeprecatedModule");
     }
   }
 
@@ -398,16 +395,11 @@ public class ScopesTest extends TestCase {
     } catch (CreationException expected) {
       assertContains(
           expected.getMessage(),
-          "1) Scope Scopes.NO_SCOPE is already bound to "
-              + CustomScoped.class.getName()
-              + " at "
-              + CustomNoScopeModule.class.getName()
-              + getDeclaringSourcePart(getClass()),
-          asModuleChain(OuterScopeModule.class, CustomNoScopeModule.class),
+          "Scope Scopes.NO_SCOPE is already bound to ScopesTest$CustomScoped",
+          "ScopesTest$OuterScopeModule -> ScopesTest$CustomNoScopeModule",
           "Cannot bind Scopes.SINGLETON.",
-          "at " + ScopesTest.class.getName(),
-          getDeclaringSourcePart(getClass()),
-          asModuleChain(OuterScopeModule.class, CustomSingletonModule.class));
+          "at ScopesTest$CustomSingletonModule.configure",
+          "ScopesTest$OuterScopeModule -> ScopesTest$CustomSingletonModule");
     }
   }
 
@@ -443,8 +435,8 @@ public class ScopesTest extends TestCase {
     } catch (ConfigurationException expected) {
       assertContains(
           expected.getMessage(),
-          "1) More than one scope annotation was found: ",
-          "while locating " + SingletonAndCustomScoped.class.getName());
+          "More than one scope annotation was found: Singleton and ScopesTest$CustomScoped.",
+          "while locating ScopesTest$SingletonAndCustomScoped");
     }
   }
 
@@ -506,6 +498,7 @@ public class ScopesTest extends TestCase {
         }
       };
 
+  @SuppressWarnings("InjectScopeOrQualifierAnnotationRetention") // to check failure mode
   @Target({ElementType.TYPE, ElementType.METHOD})
   @ScopeAnnotation
   public @interface NotRuntimeRetainedScoped {}
@@ -919,16 +912,7 @@ public class ScopesTest extends TestCase {
     volatile boolean barrierPassed = false;
 
     SBarrierProvider(int nThreads) {
-      barrier =
-          new CyclicBarrier(
-              nThreads,
-              new Runnable() {
-                @Override
-                public void run() {
-                  // would finish before returning from await() for any thread
-                  barrierPassed = true;
-                }
-              });
+      barrier = new CyclicBarrier(nThreads, () -> barrierPassed = true);
     }
 
     @Override
@@ -975,14 +959,7 @@ public class ScopesTest extends TestCase {
             });
 
     Future<S> secondThreadResult =
-        Executors.newSingleThreadExecutor()
-            .submit(
-                new Callable<S>() {
-                  @Override
-                  public S call() {
-                    return secondInjector.getInstance(S.class);
-                  }
-                });
+        Executors.newSingleThreadExecutor().submit(() -> secondInjector.getInstance(S.class));
 
     S firstS = injector.getInstance(S.class);
     S secondS = secondThreadResult.get();
@@ -1045,22 +1022,16 @@ public class ScopesTest extends TestCase {
     Future<G> firstThreadResult =
         Executors.newSingleThreadExecutor()
             .submit(
-                new Callable<G>() {
-                  @Override
-                  public G call() {
-                    Thread.currentThread().setName("G.class");
-                    return injector.createChildInjector().getInstance(G.class);
-                  }
+                () -> {
+                  Thread.currentThread().setName("G.class");
+                  return injector.createChildInjector().getInstance(G.class);
                 });
     Future<H> secondThreadResult =
         Executors.newSingleThreadExecutor()
             .submit(
-                new Callable<H>() {
-                  @Override
-                  public H call() {
-                    Thread.currentThread().setName("H.class");
-                    return injector.createChildInjector().getInstance(H.class);
-                  }
+                () -> {
+                  Thread.currentThread().setName("H.class");
+                  return injector.createChildInjector().getInstance(H.class);
                 });
 
     // using separate threads to avoid potential deadlock on the main thread
@@ -1179,18 +1150,18 @@ public class ScopesTest extends TestCase {
               }
             });
 
-    FutureTask<I0> firstThreadResult = new FutureTask<>(fetchClass(injector, I0.class));
+    FutureTask<I0> firstThreadResult = new FutureTask<>(() -> injector.getInstance(I0.class));
     Thread i0Thread = new Thread(firstThreadResult, "I0.class");
     // we need to call toString() now, because the toString() changes after the thread exits.
     String i0ThreadString = i0Thread.toString();
     i0Thread.start();
 
-    FutureTask<J0> secondThreadResult = new FutureTask<>(fetchClass(injector, J0.class));
+    FutureTask<J0> secondThreadResult = new FutureTask<>(() -> injector.getInstance(J0.class));
     Thread j0Thread = new Thread(secondThreadResult, "J0.class");
     String j0ThreadString = j0Thread.toString();
     j0Thread.start();
 
-    FutureTask<K0> thirdThreadResult = new FutureTask<>(fetchClass(injector, K0.class));
+    FutureTask<K0> thirdThreadResult = new FutureTask<>(() -> injector.getInstance(K0.class));
     Thread k0Thread = new Thread(thirdThreadResult, "K0.class");
     String k0ThreadString = k0Thread.toString();
     k0Thread.start();
@@ -1287,34 +1258,21 @@ public class ScopesTest extends TestCase {
         ImmutableList.of(I1.class.getName(), I2.class.getName(), J1.class.getName()));
   }
 
-  private static <T> Callable<T> fetchClass(final Injector injector, final Class<T> clazz) {
-    return new Callable<T>() {
-      @Override
-      public T call() {
-        return injector.getInstance(clazz);
-      }
-    };
-  }
-
   // Test for https://github.com/google/guice/issues/1032
 
   public void testScopeAppliedByUserInsteadOfScoping() throws Exception {
     Injector injector =
         java.util.concurrent.Executors.newSingleThreadExecutor()
             .submit(
-                new Callable<Injector>() {
-                  @Override
-                  public Injector call() {
-                    return Guice.createInjector(
+                () ->
+                    Guice.createInjector(
                         new AbstractModule() {
                           @Override
                           protected void configure() {
                             bindListener(Matchers.any(), new ScopeMutatingProvisionListener());
                             bind(SingletonClass.class);
                           }
-                        });
-                  }
-                })
+                        }))
             .get();
     injector.getInstance(SingletonClass.class); // will fail here with NPE
   }
@@ -1375,5 +1333,41 @@ public class ScopesTest extends TestCase {
                     return true;
                   }
                 }));
+  }
+
+  public void testScopedLinkedBindingDoesNotPropagateEagerSingleton() {
+    final Key<String> a = Key.get(String.class, named("A"));
+    final Key<String> b = Key.get(String.class, named("B"));
+
+    final Scope notInScopeScope =
+        new Scope() {
+          @Override
+          public <T> Provider<T> scope(Key<T> key, Provider<T> unscoped) {
+            return new Provider<T>() {
+              @Override
+              public T get() {
+                throw new IllegalStateException("Not in scope");
+              }
+            };
+          }
+        };
+
+    Module module =
+        new AbstractModule() {
+          @Override
+          protected void configure() {
+            bind(a).toInstance("a");
+            bind(b).to(a).in(CustomScoped.class);
+            bindScope(CustomScoped.class, notInScopeScope);
+          }
+        };
+
+    Injector injector = Guice.createInjector(module);
+    Provider<String> bProvider = injector.getProvider(b);
+    try {
+      bProvider.get();
+      fail("expected failure");
+    } catch (ProvisionException expected) {
+    }
   }
 }

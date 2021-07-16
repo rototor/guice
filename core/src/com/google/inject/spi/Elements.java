@@ -17,9 +17,11 @@
 package com.google.inject.spi;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.inject.internal.InternalFlags.getIncludeStackTraceOption;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
@@ -43,9 +45,11 @@ import com.google.inject.internal.BindingBuilder;
 import com.google.inject.internal.ConstantBindingBuilderImpl;
 import com.google.inject.internal.Errors;
 import com.google.inject.internal.ExposureBuilder;
+import com.google.inject.internal.GuiceInternal;
 import com.google.inject.internal.InternalFlags.IncludeStackTraceOption;
 import com.google.inject.internal.MoreTypes;
 import com.google.inject.internal.PrivateElementsImpl;
+import com.google.inject.internal.ProviderMethod;
 import com.google.inject.internal.ProviderMethodsModule;
 import com.google.inject.internal.util.SourceProvider;
 import com.google.inject.internal.util.StackTraceElements;
@@ -58,6 +62,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.aopalliance.intercept.MethodInterceptor;
 
 /**
  * Exposes elements of a module so they can be inspected, validated or {@link
@@ -103,12 +108,34 @@ public final class Elements {
       binder.install(module);
     }
     binder.scanForAnnotatedMethods();
-    for (RecordingBinder child : binder.privateBinders) {
+    for (RecordingBinder child : binder.privateBindersForScanning) {
       child.scanForAnnotatedMethods();
     }
+    binder.permitMapConstruction.finish();
     // Free the memory consumed by the stack trace elements cache
     StackTraceElements.clearCache();
     return Collections.unmodifiableList(binder.elements);
+  }
+
+  // TODO(user): Consider moving the RecordingBinder to com.google.inject.internal and removing these
+  // internal 'friend' methods.
+  /**
+   * Internal version of Binder.withSource for establishing a trusted ElementSource chain for
+   * source-restricting bindings that are re-written using {@link Element#applyTo}.
+   *
+   * <p>Using Binder.withSource is not trustworthy because it's a public API that external users can
+   * use to spoof the original ElementSource of a binding by calling withSource(bogusElementSource).
+   *
+   * @since 5.0
+   */
+  public static Binder withTrustedSource(
+      GuiceInternal guiceInternal, Binder binder, Object source) {
+    checkNotNull(guiceInternal);
+    if (binder instanceof RecordingBinder) {
+      return ((RecordingBinder) binder).withTrustedSource(source);
+    }
+    // Preserve existing (untrusted) behavior for non-standard Binder implementations.
+    return binder.withSource(source);
   }
 
   private static class ElementsAsModule implements Module {
@@ -137,12 +164,10 @@ public final class Elements {
   }
 
   private static class ModuleInfo {
-    private final Binder binder;
     private final ModuleSource moduleSource;
     private final boolean skipScanning;
 
-    private ModuleInfo(Binder binder, ModuleSource moduleSource, boolean skipScanning) {
-      this.binder = binder;
+    private ModuleInfo(ModuleSource moduleSource, boolean skipScanning) {
       this.moduleSource = moduleSource;
       this.skipScanning = skipScanning;
     }
@@ -153,19 +178,30 @@ public final class Elements {
     private final Map<Module, ModuleInfo> modules;
     private final List<Element> elements;
     private final Object source;
-    /** The current modules stack */
-    private ModuleSource moduleSource = null;
-
     private final SourceProvider sourceProvider;
     private final Set<ModuleAnnotatedMethodScanner> scanners;
-
     /** The binder where exposed bindings will be created */
     private final RecordingBinder parent;
 
     private final PrivateElementsImpl privateElements;
-
     /** All children private binders, so we can scan through them. */
-    private final List<RecordingBinder> privateBinders;
+    private final List<RecordingBinder> privateBindersForScanning;
+
+    private final BindingSourceRestriction.PermitMapConstruction permitMapConstruction;
+
+    /** The current modules stack */
+    private ModuleSource moduleSource = null;
+    /**
+     * The current scanner.
+     *
+     * <p>Note that scanners cannot nest, ie. a scanner cannot install a module that requires
+     * scanning - except the built-in @Provides* methods. The built-in scanner isn't tracked by this
+     * variable, only custom scanners are.
+     */
+    private ModuleAnnotatedMethodScanner scannerSource = null;
+
+    private ModuleAnnotatedMethodScanner currentScanner = null;
+    private boolean trustedSource = false;
 
     private RecordingBinder(Stage stage) {
       this.stage = stage;
@@ -183,50 +219,59 @@ public final class Elements {
               BindingBuilder.class);
       this.parent = null;
       this.privateElements = null;
-      this.privateBinders = Lists.newArrayList();
+      this.privateBindersForScanning = Lists.newArrayList();
+      this.permitMapConstruction = new BindingSourceRestriction.PermitMapConstruction();
     }
 
     /** Creates a recording binder that's backed by {@code prototype}. */
     private RecordingBinder(
-        RecordingBinder prototype, Object source, SourceProvider sourceProvider) {
+        RecordingBinder prototype,
+        Object source,
+        SourceProvider sourceProvider,
+        boolean trustedSource) {
       checkArgument(source == null ^ sourceProvider == null);
 
       this.stage = prototype.stage;
       this.modules = prototype.modules;
       this.elements = prototype.elements;
       this.scanners = prototype.scanners;
+      this.currentScanner = prototype.currentScanner;
       this.source = source;
+      this.trustedSource = trustedSource;
       this.moduleSource = prototype.moduleSource;
       this.sourceProvider = sourceProvider;
       this.parent = prototype.parent;
       this.privateElements = prototype.privateElements;
-      this.privateBinders = prototype.privateBinders;
+      this.privateBindersForScanning = prototype.privateBindersForScanning;
+      this.permitMapConstruction = prototype.permitMapConstruction;
+      this.scannerSource = prototype.scannerSource;
     }
 
     /** Creates a private recording binder. */
     private RecordingBinder(RecordingBinder parent, PrivateElementsImpl privateElements) {
       this.stage = parent.stage;
       this.modules = Maps.newLinkedHashMap();
-      this.scanners = Sets.newLinkedHashSet(parent.scanners);
+      this.scanners = Sets.newLinkedHashSet();
+      this.currentScanner = parent.currentScanner;
       this.elements = privateElements.getElementsMutable();
       this.source = parent.source;
       this.moduleSource = parent.moduleSource;
       this.sourceProvider = parent.sourceProvider;
       this.parent = parent;
       this.privateElements = privateElements;
-      this.privateBinders = parent.privateBinders;
+      this.privateBindersForScanning = parent.privateBindersForScanning;
+      this.permitMapConstruction = parent.permitMapConstruction;
+      this.scannerSource = parent.scannerSource;
     }
 
-    /*if[AOP]*/
     @Override
     public void bindInterceptor(
         Matcher<? super Class<?>> classMatcher,
         Matcher<? super Method> methodMatcher,
-        org.aopalliance.intercept.MethodInterceptor... interceptors) {
+        MethodInterceptor... interceptors) {
       elements.add(
           new InterceptorBinding(getElementSource(), classMatcher, methodMatcher, interceptors));
     }
-    /*end[AOP]*/
 
     @Override
     public void bindScope(Class<? extends Annotation> annotationType, Scope scope) {
@@ -236,11 +281,13 @@ public final class Elements {
     @Override
     @SuppressWarnings("unchecked") // it is safe to use the type literal for the raw type
     public void requestInjection(Object instance) {
+      checkNotNull(instance, "instance");
       requestInjection((TypeLiteral<Object>) TypeLiteral.get(instance.getClass()), instance);
     }
 
     @Override
     public <T> void requestInjection(TypeLiteral<T> type, T instance) {
+      checkNotNull(instance, "instance");
       elements.add(
           new InjectionRequest<T>(
               getElementSource(), MoreTypes.canonicalizeForKey(type), instance));
@@ -284,18 +331,21 @@ public final class Elements {
      * maps. (They're stored in both maps to prevent a module from being installed more than once.)
      */
     void scanForAnnotatedMethods() {
-      for (ModuleAnnotatedMethodScanner scanner : scanners) {
-        // Note: we must iterate over a copy of the modules because calling install(..)
-        // will mutate modules, otherwise causing a ConcurrentModificationException.
-        for (Map.Entry<Module, ModuleInfo> entry : Maps.newLinkedHashMap(modules).entrySet()) {
-          Module module = entry.getKey();
-          ModuleInfo info = entry.getValue();
-          if (info.skipScanning) {
-            continue;
-          }
+      Iterable<ModuleAnnotatedMethodScanner> scanners = getAllScanners();
+      // Note: we must iterate over a copy of the modules because calling install(..)
+      // will mutate modules, otherwise causing a ConcurrentModificationException.
+      for (Map.Entry<Module, ModuleInfo> entry : Maps.newLinkedHashMap(modules).entrySet()) {
+        Module module = entry.getKey();
+        ModuleInfo info = entry.getValue();
+        if (info.skipScanning) {
+          continue;
+        }
+        for (ModuleAnnotatedMethodScanner scanner : scanners) {
+          currentScanner = scanner;
           moduleSource = entry.getValue().moduleSource;
+          permitMapConstruction.restoreCurrentModulePermits(moduleSource);
           try {
-            info.binder.install(ProviderMethodsModule.forModule(module, scanner));
+            install(ProviderMethodsModule.forModule(module, scanner));
           } catch (RuntimeException e) {
             Collection<Message> messages = Errors.getMessagesFromThrowable(e);
             if (!messages.isEmpty()) {
@@ -311,51 +361,100 @@ public final class Elements {
 
     @Override
     public void install(Module module) {
-      if (!modules.containsKey(module)) {
-        RecordingBinder binder = this;
-        boolean unwrapModuleSource = false;
-        // Update the module source for the new module
-        if (module instanceof ProviderMethodsModule) {
-          // There are two reason's we'd want to get the module source in a ProviderMethodsModule.
-          // ModuleAnnotatedMethodScanner lets users scan their own modules for @Provides-like
-          // bindings.  If they install the module at a top-level, then moduleSource can be null.
-          // Also, if they pass something other than 'this' to it, we'd have the wrong source.
-          Object delegate = ((ProviderMethodsModule) module).getDelegateModule();
-          if (moduleSource == null
-              || !moduleSource.getModuleClassName().equals(delegate.getClass().getName())) {
-            moduleSource = getModuleSource(delegate);
-            unwrapModuleSource = true;
-          }
+      // Ignore duplicate installations of the same module instance.
+      if (modules.containsKey(module)) {
+        return;
+      }
+      // Whether the module installed is a ProviderMethodModule for a custom scanner.
+      boolean customScanner = false;
+      Class<?> newModuleClass = null;
+      RecordingBinder binder = this;
+      // Update the module source for the new module
+      if (module instanceof ProviderMethodsModule) {
+        ProviderMethodsModule providerMethodsModule = (ProviderMethodsModule) module;
+        if (!providerMethodsModule.isScanningBuiltInProvidesMethods()) {
+          scannerSource = providerMethodsModule.getScanner();
+          customScanner = true;
+        }
+        // There are two reason's we'd want to get the module source in a ProviderMethodsModule.
+        // ModuleAnnotatedMethodScanner lets users scan their own modules for @Provides-like
+        // bindings.  If they install the module at a top-level, then moduleSource can be null.
+        // Also, if they pass something other than 'this' to it, we'd have the wrong source.
+        Class<?> delegateClass = providerMethodsModule.getDelegateModuleClass();
+        if (moduleSource == null
+            || !moduleSource.getModuleClassName().equals(delegateClass.getName())) {
+          newModuleClass = delegateClass;
+        }
+      } else {
+        if (moduleScanning()) {
+          forbidNestedScannerMethods(module);
+        }
+        newModuleClass = module.getClass();
+      }
+      if (newModuleClass != null) {
+        moduleSource = getModuleSource(newModuleClass);
+        permitMapConstruction.pushModule(newModuleClass, moduleSource);
+      }
+      boolean skipScanning = false;
+      if (module instanceof PrivateModule) {
+        binder = (RecordingBinder) binder.newPrivateBinder();
+        // Store the module in the private binder too so we scan for it.
+        binder.modules.put(module, new ModuleInfo(moduleSource, false));
+        skipScanning = true; // don't scan this module in the parent's module set.
+      }
+      // Always store this in the parent binder (even if it was a private module)
+      // so that we know not to process it again, and so that scanners inherit down.
+      modules.put(module, new ModuleInfo(moduleSource, skipScanning));
+      try {
+        module.configure(binder);
+      } catch (RuntimeException e) {
+        Collection<Message> messages = Errors.getMessagesFromThrowable(e);
+        if (!messages.isEmpty()) {
+          elements.addAll(messages);
         } else {
-          moduleSource = getModuleSource(module);
-          unwrapModuleSource = true;
-        }
-        boolean skipScanning = false;
-        if (module instanceof PrivateModule) {
-          binder = (RecordingBinder) binder.newPrivateBinder();
-          // Store the module in the private binder too so we scan for it.
-          binder.modules.put(module, new ModuleInfo(binder, moduleSource, false));
-          skipScanning = true; // don't scan this module in the parent's module set.
-        }
-        // Always store this in the parent binder (even if it was a private module)
-        // so that we know not to process it again, and so that scanners inherit down.
-        modules.put(module, new ModuleInfo(binder, moduleSource, skipScanning));
-        try {
-          module.configure(binder);
-        } catch (RuntimeException e) {
-          Collection<Message> messages = Errors.getMessagesFromThrowable(e);
-          if (!messages.isEmpty()) {
-            elements.addAll(messages);
-          } else {
-            addError(e);
-          }
-        }
-        binder.install(ProviderMethodsModule.forModule(module));
-        // We are done with this module, so undo module source change
-        if (unwrapModuleSource) {
-          moduleSource = moduleSource.getParent();
+          addError(e);
         }
       }
+      binder.install(ProviderMethodsModule.forModule(module));
+      // We are done with this module, so undo module source change
+      if (newModuleClass != null) {
+        moduleSource = moduleSource.getParent();
+        permitMapConstruction.popModule();
+      }
+      // Only wipe the scannerSource once custom scanner installation is finished. This way all
+      // bindings created by the custom scanner will have it as their scanner source, including
+      // bindings created by the built-in scanner scanning @Provides* methods in modules installed
+      // by the custom scanner.
+      if (customScanner) {
+        scannerSource = null;
+      }
+    }
+
+    private void forbidNestedScannerMethods(Module module) {
+      for (ModuleAnnotatedMethodScanner scanner : getAllScanners()) {
+        ProviderMethodsModule providerMethodsModule =
+            (ProviderMethodsModule) ProviderMethodsModule.forModule(module, scanner);
+        for (ProviderMethod<?> method : providerMethodsModule.getProviderMethods(this)) {
+          addError(
+              "Scanner %s is installing a module with %s method. Installing modules with custom "
+                  + "provides methods from a ModuleAnnotatedMethodScanner is not supported.",
+              currentScanner, method.getAnnotation().annotationType().getCanonicalName());
+        }
+      }
+    }
+
+    /**
+     * Get all scanners registered in this binder and its ancestors.
+     *
+     * <p>Should only be called during module scanning, because at that point registering new
+     * scanners is forbidden.
+     */
+    private Iterable<ModuleAnnotatedMethodScanner> getAllScanners() {
+      if (privateElements == null) {
+        return scanners;
+      }
+      // Private binders have their own set of scanners and they inherit from their parent.
+      return Iterables.concat(scanners, parent.getAllScanners());
     }
 
     @Override
@@ -426,26 +525,40 @@ public final class Elements {
 
     @Override
     public RecordingBinder withSource(final Object source) {
-      return source == this.source ? this : new RecordingBinder(this, source, null);
+      return source == this.source
+          ? this
+          : new RecordingBinder(
+              this, source, /* sourceProvider = */ null, /* trustedSource = */ false);
+    }
+
+    public RecordingBinder withTrustedSource(final Object source) {
+      return source == this.source
+          ? this
+          : new RecordingBinder(
+              this, source, /* sourceProvider = */ null, /* trustedSource = */ true);
     }
 
     @Override
-    public RecordingBinder skipSources(Class... classesToSkip) {
+    public RecordingBinder skipSources(Class<?>... classesToSkip) {
       // if a source is specified explicitly, we don't need to skip sources
       if (source != null) {
         return this;
       }
 
       SourceProvider newSourceProvider = sourceProvider.plusSkippedClasses(classesToSkip);
-      return new RecordingBinder(this, null, newSourceProvider);
+      return new RecordingBinder(
+          this, /* source = */ null, newSourceProvider, /* trustedSource = */ false);
     }
 
     @Override
     public PrivateBinder newPrivateBinder() {
       PrivateElementsImpl privateElements = new PrivateElementsImpl(getElementSource());
       RecordingBinder binder = new RecordingBinder(this, privateElements);
-      privateBinders.add(binder);
       elements.add(privateElements);
+      // Don't want to scan private modules installed by scanners.
+      if (!moduleScanning()) {
+        privateBindersForScanning.add(binder);
+      }
       return binder;
     }
 
@@ -471,6 +584,13 @@ public final class Elements {
 
     @Override
     public void scanModulesForAnnotatedMethods(ModuleAnnotatedMethodScanner scanner) {
+      if (moduleScanning()) {
+        addError(
+            "Attempting to register ModuleAnnotatedMethodScanner %s from scanner %s. Scanners are"
+                + " not allowed to register other scanners.",
+            currentScanner, scanner);
+        return;
+      }
       scanners.add(scanner);
       elements.add(new ModuleAnnotatedMethodScannerBinding(getElementSource(), scanner));
     }
@@ -511,7 +631,7 @@ public final class Elements {
       return builder;
     }
 
-    private ModuleSource getModuleSource(Object module) {
+    private ModuleSource getModuleSource(Class<?> module) {
       StackTraceElement[] partialCallStack;
       if (getIncludeStackTraceOption() == IncludeStackTraceOption.COMPLETE) {
         partialCallStack = getPartialCallStack(new Throwable().getStackTrace());
@@ -519,7 +639,7 @@ public final class Elements {
         partialCallStack = new StackTraceElement[0];
       }
       if (moduleSource == null) {
-        return new ModuleSource(module, partialCallStack);
+        return new ModuleSource(module, partialCallStack, permitMapConstruction.getPermitMap());
       }
       return moduleSource.createChild(module, partialCallStack);
     }
@@ -551,14 +671,30 @@ public final class Elements {
         if (stackTraceOption == IncludeStackTraceOption.COMPLETE
             || stackTraceOption == IncludeStackTraceOption.ONLY_FOR_DECLARING_SOURCE) {
           // With the above conditions and assignments 'callStack' is non-null
-          declaringSource = sourceProvider.get(callStack);
+          StackTraceElement callingSource = sourceProvider.get(callStack);
+          // If we've traversed past all reasonable sources and into our internal code, then we
+          // don't know the source.
+          if (callingSource
+                  .getClassName()
+                  .equals("com.google.inject.internal.InjectorShell$Builder")
+              && callingSource.getMethodName().equals("build")) {
+            declaringSource = SourceProvider.UNKNOWN_SOURCE;
+          } else {
+            declaringSource = callingSource;
+          }
         } else { // or if (stackTraceOption == IncludeStackTraceOptions.OFF)
           // As neither 'declaring source' nor 'call stack' is available use 'module source'
           declaringSource = sourceProvider.getFromClassNames(moduleSource.getModuleClassNames());
         }
       }
       // Build the binding call stack
-      return new ElementSource(originalSource, declaringSource, moduleSource, partialCallStack);
+      return new ElementSource(
+          originalSource,
+          trustedSource,
+          declaringSource,
+          moduleSource,
+          partialCallStack,
+          scannerSource);
     }
 
     /**
@@ -577,6 +713,11 @@ public final class Elements {
       StackTraceElement[] partialCallStack = new StackTraceElement[chunkSize];
       System.arraycopy(callStack, 1, partialCallStack, 0, chunkSize);
       return partialCallStack;
+    }
+
+    /** Returns if the binder is in the module scanning phase. */
+    private boolean moduleScanning() {
+      return currentScanner != null;
     }
 
     @Override

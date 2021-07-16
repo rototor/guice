@@ -42,7 +42,6 @@ import com.google.inject.ProvisionException;
 import com.google.inject.Scopes;
 import com.google.inject.TypeLiteral;
 import com.google.inject.internal.Annotations;
-import com.google.inject.internal.BytecodeGen;
 import com.google.inject.internal.Errors;
 import com.google.inject.internal.ErrorsException;
 import com.google.inject.internal.UniqueAnnotations;
@@ -57,9 +56,11 @@ import com.google.inject.spi.ProviderWithExtensionVisitor;
 import com.google.inject.spi.Toolable;
 import com.google.inject.util.Providers;
 import java.lang.annotation.Annotation;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
@@ -70,6 +71,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -93,6 +95,12 @@ final class FactoryProvider2<F>
 
   // use the logger under a well-known name, not FactoryProvider2
   static final Logger logger = Logger.getLogger(AssistedInject.class.getName());
+
+  /**
+   * A constant that determines if we allow fallback to reflection. Typically always true, but
+   * reflectively set to false in tests.
+   */
+  private static boolean allowLookupReflection = true;
 
   /** if a factory method parameter isn't annotated, it gets this annotation. */
   static final Assisted DEFAULT_ANNOTATION =
@@ -121,8 +129,8 @@ final class FactoryProvider2<F>
         public String toString() {
           return "@"
               + Assisted.class.getName()
-              + "(value="
-              + Annotations.memberValueString("")
+              + "("
+              + Annotations.memberValueString("value", "")
               + ")";
         }
       };
@@ -209,7 +217,7 @@ final class FactoryProvider2<F>
   private final ImmutableMap<Method, AssistData> assistDataByMethod;
 
   /** Mapping from method to method handle, for generated default methods. */
-  private final ImmutableMap<Method, MethodHandleWrapper> methodHandleByMethod;
+  private final ImmutableMap<Method, MethodHandle> methodHandleByMethod;
 
   /** the hosting injector, or null if we haven't been initialized yet */
   private Injector injector;
@@ -226,8 +234,10 @@ final class FactoryProvider2<F>
   /**
    * @param factoryKey a key for a Java interface that defines one or more create methods.
    * @param collector binding configuration that maps method return types to implementation types.
+   * @param userLookups user provided lookups, optional.
    */
-  FactoryProvider2(Key<F> factoryKey, BindingCollector collector) {
+  FactoryProvider2(
+      Key<F> factoryKey, BindingCollector collector, MethodHandles.Lookup userLookups) {
     this.factoryKey = factoryKey;
     this.collector = collector;
 
@@ -354,22 +364,52 @@ final class FactoryProvider2<F>
       factory =
           factoryRawType.cast(
               Proxy.newProxyInstance(
-                  BytecodeGen.getClassLoader(factoryRawType),
-                  new Class<?>[] {factoryRawType},
-                  this));
+                  factoryRawType.getClassLoader(), new Class<?>[] {factoryRawType}, this));
 
       // Now go back through default methods. Try to use MethodHandles to make things
       // work.  If that doesn't work, fallback to trying to find compatible method
       // signatures.
       Map<Method, AssistData> dataSoFar = assistDataBuilder.build();
-      ImmutableMap.Builder<Method, MethodHandleWrapper> methodHandleBuilder =
-          ImmutableMap.builder();
+      ImmutableMap.Builder<Method, MethodHandle> methodHandleBuilder = ImmutableMap.builder();
+      boolean warnedAboutUserLookups = false;
       for (Map.Entry<String, Method> entry : defaultMethods.entries()) {
+        if (!warnedAboutUserLookups
+            && userLookups == null
+            && !Modifier.isPublic(factory.getClass().getModifiers())) {
+          warnedAboutUserLookups = true;
+          logger.log(
+              Level.WARNING,
+              "AssistedInject factory {0} is non-public and has javac-generated default methods. "
+                  + " Please pass a `MethodHandles.lookups()` with"
+                  + " FactoryModuleBuilder.withLookups when using this factory so that Guice can"
+                  + " properly call the default methods. Guice will try to work around the"
+                  + " problem, but doing so requires reflection into the JDK and may break at any"
+                  + " time.",
+              new Object[] {factoryType});
+        }
+
         Method defaultMethod = entry.getValue();
-        MethodHandleWrapper handle = MethodHandleWrapper.create(defaultMethod, factory);
+        MethodHandle handle = null;
+        try {
+          // Note: this can return null if we fallback to reflecting the private lookup cxtor and it
+          // fails. In that case, we try the super hacky workaround below (w/ 'foundMatch').
+          // It can throw an exception if we're not doing private reflection, or if unreflectSpecial
+          // _still_ fails.
+          handle = superMethodHandle(defaultMethod, factory, userLookups);
+        } catch (ReflectiveOperationException roe) {
+          errors.addMessage(
+              new Message(
+                  "Unable to use factory "
+                      + factoryRawType.getName()
+                      + ". Did you call FactoryModuleBuilder.withLookups(MethodHandles.lookups())"
+                      + " (with a lookups that has access to the factory)?"));
+          continue;
+        }
+
         if (handle != null) {
           methodHandleBuilder.put(defaultMethod, handle);
         } else {
+          // TODO: remove this workaround when Java8 support is dropped
           boolean foundMatch = false;
           for (Method otherMethod : otherMethods.get(defaultMethod.getName())) {
             if (dataSoFar.containsKey(otherMethod) && isCompatible(defaultMethod, otherMethod)) {
@@ -392,7 +432,8 @@ final class FactoryProvider2<F>
         }
       }
 
-      // If we generated any errors (from finding matching constructors, for instance), throw an exception.
+      // If we generated any errors (from finding matching constructors, for instance), throw an
+      // exception.
       if (errors.hasErrors()) {
         throw errors.toException();
       }
@@ -547,7 +588,7 @@ final class FactoryProvider2<F>
     }
 
     if (!anyAssistedInjectConstructors) {
-      // If none existed, use @Inject.
+      // If none existed, use @Inject or a no-arg constructor.
       try {
         return InjectionPoint.forConstructorOf(implementation);
       } catch (ConfigurationException e) {
@@ -693,7 +734,7 @@ final class FactoryProvider2<F>
    */
   private <T> Key<T> assistKey(Method method, Key<T> key, Errors errors) throws ErrorsException {
     if (key.getAnnotationType() == null) {
-      return Key.get(key.getTypeLiteral(), DEFAULT_ANNOTATION);
+      return key.withAnnotation(DEFAULT_ANNOTATION);
     } else if (key.getAnnotationType() == Assisted.class) {
       return key;
     } else {
@@ -765,7 +806,8 @@ final class FactoryProvider2<F>
             int p = 0;
             if (!data.optimized) {
               for (Key<?> paramKey : data.paramTypes) {
-                // Wrap in a Provider to cover null, and to prevent Guice from injecting the parameter
+                // Wrap in a Provider to cover null, and to prevent Guice from injecting the
+                // parameter
                 binder.bind((Key) paramKey).toProvider(Providers.of(args[p++]));
               }
             } else {
@@ -895,82 +937,106 @@ final class FactoryProvider2<F>
     }
   }
 
-  /** Wrapper around MethodHandles/MethodHandle, so we can compile+run on java6. */
-  private static class MethodHandleWrapper {
-    static final int ALL_MODES =
+  private static MethodHandle superMethodHandle(
+      Method method, Object proxy, MethodHandles.Lookup userLookups)
+      throws ReflectiveOperationException {
+    MethodHandles.Lookup lookup = userLookups == null ? MethodHandles.lookup() : userLookups;
+    MethodHandle handle = SUPER_METHOD_LOOKUP.get().superMethodHandle(method, lookup);
+    return handle != null ? handle.bindTo(proxy) : null;
+  }
+
+  // begin by trying unreflectSpecial to find super method handles; this should work on Java14+
+  private static final AtomicReference<SuperMethodLookup> SUPER_METHOD_LOOKUP =
+      new AtomicReference<>(SuperMethodLookup.UNREFLECT_SPECIAL);
+
+  private static enum SuperMethodLookup {
+    UNREFLECT_SPECIAL {
+      @Override
+      MethodHandle superMethodHandle(Method method, MethodHandles.Lookup lookup)
+          throws ReflectiveOperationException {
+        try {
+          return lookup.unreflectSpecial(method, method.getDeclaringClass());
+        } catch (ReflectiveOperationException e) {
+          // fall back to findSpecial which should work on Java9+; use that for future lookups
+          SUPER_METHOD_LOOKUP.compareAndSet(this, FIND_SPECIAL);
+          return SUPER_METHOD_LOOKUP.get().superMethodHandle(method, lookup);
+        }
+      }
+    },
+    FIND_SPECIAL {
+      @Override
+      MethodHandle superMethodHandle(Method method, MethodHandles.Lookup lookup)
+          throws ReflectiveOperationException {
+        try {
+          Class<?> declaringClass = method.getDeclaringClass();
+          // use findSpecial to workaround https://bugs.openjdk.java.net/browse/JDK-8209005
+          return lookup.findSpecial(
+              declaringClass,
+              method.getName(),
+              MethodType.methodType(method.getReturnType(), method.getParameterTypes()),
+              declaringClass);
+        } catch (ReflectiveOperationException e) {
+          if (!allowLookupReflection) {
+            throw e;
+          }
+          // fall back to private Lookup which should work on Java8; use that for future lookups
+          SUPER_METHOD_LOOKUP.compareAndSet(this, PRIVATE_LOOKUP);
+          return SUPER_METHOD_LOOKUP.get().superMethodHandle(method, lookup);
+        }
+      }
+    },
+    PRIVATE_LOOKUP {
+      @Override
+      MethodHandle superMethodHandle(Method method, MethodHandles.Lookup unused)
+          throws ReflectiveOperationException {
+        return PrivateLookup.superMethodHandle(method);
+      }
+    };
+
+    abstract MethodHandle superMethodHandle(Method method, MethodHandles.Lookup lookup)
+        throws ReflectiveOperationException;
+  };
+
+  // Note: this isn't a public API, but we need to use it in order to call default methods on (or
+  // with) non-public types. If it doesn't exist, the code falls back to a less precise check.
+  static class PrivateLookup {
+    PrivateLookup() {}
+
+    private static final int ALL_MODES =
         Modifier.PRIVATE | Modifier.STATIC /* package */ | Modifier.PUBLIC | Modifier.PROTECTED;
 
-    static final Method unreflectSpecial;
-    static final Method bindTo;
-    static final Method invokeWithArguments;
-    static final Constructor<?> lookupCxtor;
-    static final boolean valid;
+    private static final Constructor<MethodHandles.Lookup> privateLookupCxtor =
+        findPrivateLookupCxtor();
 
-    static {
-      Method unreflectSpecialTmp = null;
-      Method bindToTmp = null;
-      Method invokeWithArgumentsTmp = null;
-      boolean validTmp = false;
-      Constructor<?> lookupCxtorTmp = null;
+    private static Constructor<MethodHandles.Lookup> findPrivateLookupCxtor() {
       try {
-        Class<?> lookupClass = Class.forName("java.lang.invoke.MethodHandles$Lookup");
-        unreflectSpecialTmp = lookupClass.getMethod("unreflectSpecial", Method.class, Class.class);
-        Class<?> methodHandleClass = Class.forName("java.lang.invoke.MethodHandle");
-        bindToTmp = methodHandleClass.getMethod("bindTo", Object.class);
-        invokeWithArgumentsTmp = methodHandleClass.getMethod("invokeWithArguments", Object[].class);
-        lookupCxtorTmp = lookupClass.getDeclaredConstructor(Class.class, int.class);
-        lookupCxtorTmp.setAccessible(true);
-        validTmp = true;
-      } catch (Exception invalid) {
-        // Ignore the exception, store the values & exit early in create(..) if invalid.
-      }
-
-      // Store refs to later.
-      valid = validTmp;
-      unreflectSpecial = unreflectSpecialTmp;
-      bindTo = bindToTmp;
-      invokeWithArguments = invokeWithArgumentsTmp;
-      lookupCxtor = lookupCxtorTmp;
-    }
-
-    static MethodHandleWrapper create(Method method, Object proxy) {
-      if (!valid) {
-        return null;
-      }
-      try {
-        Class<?> declaringClass = method.getDeclaringClass();
-        // Note: this isn't a public API, but we need to use it in order to call default methods.
-        Object lookup = lookupCxtor.newInstance(declaringClass, ALL_MODES);
-        method.setAccessible(true);
-        // These are part of the public API, but we use reflection since we run on java6
-        // and they were introduced in java7.
-        lookup = unreflectSpecial.invoke(lookup, method, declaringClass);
-        Object handle = bindTo.invoke(lookup, proxy);
-        return new MethodHandleWrapper(handle);
-      } catch (InvocationTargetException ite) {
-        return null;
-      } catch (IllegalAccessException iae) {
-        return null;
-      } catch (InstantiationException ie) {
+        Constructor<MethodHandles.Lookup> cxtor;
+        try {
+          cxtor = MethodHandles.Lookup.class.getDeclaredConstructor(Class.class, int.class);
+        } catch (NoSuchMethodException ignored) {
+          cxtor =
+              MethodHandles.Lookup.class.getDeclaredConstructor(
+                  Class.class, Class.class, int.class);
+        }
+        cxtor.setAccessible(true);
+        return cxtor;
+      } catch (ReflectiveOperationException | SecurityException e) {
         return null;
       }
     }
 
-    final Object handle;
-
-    MethodHandleWrapper(Object handle) {
-      this.handle = handle;
-    }
-
-    Object invokeWithArguments(Object[] args) throws Exception {
-      // We must cast the args to an object so the Object[] is the first param,
-      // as opposed to each individual varargs param.
-      return invokeWithArguments.invoke(handle, (Object) args);
-    }
-
-    @Override
-    public String toString() {
-      return handle.toString();
+    static MethodHandle superMethodHandle(Method method) throws ReflectiveOperationException {
+      if (privateLookupCxtor == null) {
+        return null; // fall back to assistDataBuilder workaround
+      }
+      Class<?> declaringClass = method.getDeclaringClass();
+      MethodHandles.Lookup lookup;
+      if (privateLookupCxtor.getParameterCount() == 2) {
+        lookup = privateLookupCxtor.newInstance(declaringClass, ALL_MODES);
+      } else {
+        lookup = privateLookupCxtor.newInstance(declaringClass, null, ALL_MODES);
+      }
+      return lookup.unreflectSpecial(method, declaringClass);
     }
   }
 }

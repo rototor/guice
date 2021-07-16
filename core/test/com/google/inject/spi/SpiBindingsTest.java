@@ -19,6 +19,7 @@ package com.google.inject.spi;
 import static com.google.inject.Asserts.assertContains;
 import static com.google.inject.Asserts.getDeclaringSourcePart;
 import static com.google.inject.Asserts.isIncludeStackTraceComplete;
+import static java.util.Comparator.comparing;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
@@ -392,6 +393,7 @@ public class SpiBindingsTest extends TestCase {
                 bind(String.class)
                     .toProvider(
                         new ProviderWithExtensionVisitor<String>() {
+                          @SuppressWarnings("unchecked") // Safe because V is fixed to String
                           @Override
                           public <B, V> V acceptExtensionVisitor(
                               BindingTargetVisitor<B, V> visitor,
@@ -450,7 +452,7 @@ public class SpiBindingsTest extends TestCase {
     }
   }
 
-  public void checkBindingSource(Binding binding) {
+  public void checkBindingSource(Binding<?> binding) {
     assertContains(binding.getSource().toString(), getDeclaringSourcePart(getClass()));
     ElementSource source = (ElementSource) binding.getSource();
     assertFalse(source.getModuleClassNames().isEmpty());
@@ -485,13 +487,7 @@ public class SpiBindingsTest extends TestCase {
   private final ImmutableSet<Key<?>> BUILT_IN_BINDINGS =
       ImmutableSet.of(Key.get(Injector.class), Key.get(Stage.class), Key.get(Logger.class));
 
-  private final Comparator<Binding<?>> orderByKey =
-      new Comparator<Binding<?>>() {
-        @Override
-        public int compare(Binding<?> a, Binding<?> b) {
-          return a.getKey().toString().compareTo(b.getKey().toString());
-        }
-      };
+  private final Comparator<Binding<?>> orderByKey = comparing(arg -> arg.getKey().toString());
 
   private static class StringProvider implements Provider<String> {
     @Override

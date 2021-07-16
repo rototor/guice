@@ -17,11 +17,12 @@
 package com.google.inject.internal;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 
+import com.google.common.base.Objects;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Lists;
 import com.google.common.collect.Multimap;
 import com.google.inject.Binder;
 import com.google.inject.Key;
@@ -36,6 +37,7 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.Member;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -55,7 +57,7 @@ public final class ProviderMethodsModule implements Module {
   private ProviderMethodsModule(
       Object delegate, boolean skipFastClassGeneration, ModuleAnnotatedMethodScanner scanner) {
     this.delegate = checkNotNull(delegate, "delegate");
-    this.typeLiteral = TypeLiteral.get(this.delegate.getClass());
+    this.typeLiteral = TypeLiteral.get(getDelegateModuleClass());
     this.skipFastClassGeneration = skipFastClassGeneration;
     this.scanner = scanner;
   }
@@ -91,8 +93,12 @@ public final class ProviderMethodsModule implements Module {
     return new ProviderMethodsModule(object, skipFastClassGeneration, scanner);
   }
 
-  public Object getDelegateModule() {
-    return delegate;
+  public Class<?> getDelegateModuleClass() {
+    return isStaticModule() ? (Class<?>) delegate : delegate.getClass();
+  }
+
+  private boolean isStaticModule() {
+    return delegate instanceof Class;
   }
 
   @Override
@@ -104,16 +110,34 @@ public final class ProviderMethodsModule implements Module {
 
   public List<ProviderMethod<?>> getProviderMethods(Binder binder) {
     List<ProviderMethod<?>> result = null;
+    List<MethodAndAnnotation> methodsAndAnnotations = null;
     // The highest class in the type hierarchy that contained a provider method definition.
-    Class<?> superMostClass = delegate.getClass();
-    for (Class<?> c = delegate.getClass(); c != Object.class; c = c.getSuperclass()) {
-      for (Method method : c.getDeclaredMethods()) {
+    Class<?> superMostClass = getDelegateModuleClass();
+    for (Class<?> c = superMostClass; c != Object.class && c != null; c = c.getSuperclass()) {
+      for (Method method : DeclaredMembers.getDeclaredMethods(c)) {
         Annotation annotation = getAnnotation(binder, method);
         if (annotation != null) {
-          if (result == null) {
-            result = Lists.newArrayList();
+          if (isStaticModule()
+              && !Modifier.isStatic(method.getModifiers())
+              && !Modifier.isAbstract(method.getModifiers())) {
+            binder
+                .skipSources(ProviderMethodsModule.class)
+                .addError(
+                    "%s is an instance method, but a class literal was passed. Make this method"
+                        + " static or pass an instance of the module instead.",
+                    method);
+            continue;
           }
-          result.add(createProviderMethod(binder, method, annotation));
+          if (result == null) {
+            result = new ArrayList<>();
+            methodsAndAnnotations = new ArrayList<>();
+          }
+
+          ProviderMethod<Object> providerMethod = createProviderMethod(binder, method, annotation);
+          if (providerMethod != null) {
+            result.add(providerMethod);
+          }
+          methodsAndAnnotations.add(new MethodAndAnnotation(method, annotation));
           superMostClass = c;
         }
       }
@@ -127,9 +151,9 @@ public final class ProviderMethodsModule implements Module {
     // provides methods, or when all provides methods are defined in a single class.
     Multimap<Signature, Method> methodsBySignature = null;
     // We can stop scanning when we see superMostClass, since no superclass method can override
-    // a method in a subclass.  Corrollary, if superMostClass == delegate.getClass(), there can be
-    // no overrides of a provides method.
-    for (Class<?> c = delegate.getClass(); c != superMostClass; c = c.getSuperclass()) {
+    // a method in a subclass.  Corrollary, if superMostClass == getDelegateModuleClass(), there can
+    // be no overrides of a provides method.
+    for (Class<?> c = getDelegateModuleClass(); c != superMostClass; c = c.getSuperclass()) {
       for (Method method : c.getDeclaredMethods()) {
         if (((method.getModifiers() & (Modifier.PRIVATE | Modifier.STATIC)) == 0)
             && !method.isBridge()
@@ -145,8 +169,10 @@ public final class ProviderMethodsModule implements Module {
       // we have found all the signatures and now need to identify if any were overridden
       // In the worst case this will have O(n^2) in the number of @Provides methods, but that is
       // only assuming that every method is an override, in general it should be very quick.
-      for (ProviderMethod<?> provider : result) {
-        Method method = provider.getMethod();
+      for (MethodAndAnnotation methodAndAnnotation : methodsAndAnnotations) {
+        Method method = methodAndAnnotation.method;
+        Annotation annotation = methodAndAnnotation.annotation;
+
         for (Method matchingSignature :
             methodsBySignature.get(new Signature(typeLiteral, method))) {
           // matching signature is in the same class or a super class, therefore method cannot be
@@ -157,9 +183,9 @@ public final class ProviderMethodsModule implements Module {
           // now we know matching signature is in a subtype of method.getDeclaringClass()
           if (overrides(matchingSignature, method)) {
             String annotationString =
-                provider.getAnnotation().annotationType() == Provides.class
+                annotation.annotationType() == Provides.class
                     ? "@Provides"
-                    : "@" + provider.getAnnotation().annotationType().getCanonicalName();
+                    : "@" + annotation.annotationType().getCanonicalName();
             binder.addError(
                 "Overriding "
                     + annotationString
@@ -175,6 +201,16 @@ public final class ProviderMethodsModule implements Module {
       }
     }
     return result;
+  }
+
+  private static class MethodAndAnnotation {
+    final Method method;
+    final Annotation annotation;
+
+    MethodAndAnnotation(Method method, Annotation annotation) {
+      this.method = method;
+      this.annotation = annotation;
+    }
   }
 
   /** Returns the annotation that is claimed by the scanner, or null if there is none. */
@@ -259,20 +295,39 @@ public final class ProviderMethodsModule implements Module {
     @SuppressWarnings("unchecked") // Define T as the method's return type.
     TypeLiteral<T> returnType = (TypeLiteral<T>) typeLiteral.getReturnType(method);
     Key<T> key = getKey(errors, returnType, method, method.getAnnotations());
+    boolean prepareMethodError = false;
     try {
       key = scanner.prepareMethod(binder, annotation, key, point);
     } catch (Throwable t) {
+      prepareMethodError = true;
       binder.addError(t);
     }
+
+    if (Modifier.isAbstract(method.getModifiers())) {
+      checkState(
+          prepareMethodError || key == null,
+          "%s returned a non-null key (%s) for %s. prepareMethod() must return null for abstract"
+              + " methods",
+          scanner,
+          key,
+          method);
+      return null;
+    }
+
+    if (key == null) { // scanner returned null. Skipping the binding.
+      return null;
+    }
+
     Class<? extends Annotation> scopeAnnotation =
         Annotations.findScopeAnnotation(errors, method.getAnnotations());
     for (Message message : errors.getMessages()) {
       binder.addError(message);
     }
+
     return ProviderMethod.create(
         key,
         method,
-        delegate,
+        isStaticModule() || Modifier.isStatic(method.getModifiers()) ? null : delegate,
         ImmutableSet.copyOf(point.getDependencies()),
         scopeAnnotation,
         skipFastClassGeneration,
@@ -288,11 +343,20 @@ public final class ProviderMethodsModule implements Module {
   public boolean equals(Object o) {
     return o instanceof ProviderMethodsModule
         && ((ProviderMethodsModule) o).delegate == delegate
-        && ((ProviderMethodsModule) o).scanner == scanner;
+        && ((ProviderMethodsModule) o).scanner.equals(scanner);
   }
 
   @Override
   public int hashCode() {
-    return delegate.hashCode();
+    return Objects.hashCode(delegate, scanner);
+  }
+
+  /** Is it scanning the built-in @Provides* methods. */
+  public boolean isScanningBuiltInProvidesMethods() {
+    return scanner == ProvidesMethodScanner.INSTANCE;
+  }
+
+  public ModuleAnnotatedMethodScanner getScanner() {
+    return scanner;
   }
 }

@@ -31,6 +31,7 @@ import com.google.inject.throwingproviders.ThrowingProviderBinder.SecondaryBinde
 import java.lang.annotation.Annotation;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 
@@ -47,7 +48,10 @@ class CheckedProviderMethod<T> implements CheckedProvider<T>, HasDependencies {
   private final ImmutableSet<Dependency<?>> dependencies;
   private final List<Provider<?>> parameterProviders;
   private final boolean exposed;
+
+  @SuppressWarnings("rawtypes") // Class literal uses rawtypes.
   private final Class<? extends CheckedProvider> checkedProvider;
+
   private final List<TypeLiteral<?>> exceptionTypes;
   private final boolean scopeExceptions;
 
@@ -104,9 +108,7 @@ class CheckedProviderMethod<T> implements CheckedProvider<T>, HasDependencies {
   @Override
   public T get() throws Exception {
     Object[] parameters = new Object[parameterProviders.size()];
-    for (int i = 0; i < parameters.length; i++) {
-      parameters[i] = parameterProviders.get(i).get();
-    }
+    Arrays.setAll(parameters, i -> parameterProviders.get(i).get());
 
     try {
       // We know this cast is safe becase T is the method's return type.

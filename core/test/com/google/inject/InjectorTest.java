@@ -22,7 +22,6 @@ import static java.lang.annotation.RetentionPolicy.RUNTIME;
 
 import java.io.IOException;
 import java.lang.annotation.Retention;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -239,11 +238,8 @@ public class InjectorTest extends TestCase {
       assertEquals(1, ce.getErrorMessages().size());
       Asserts.assertContains(
           ce.getMessage(),
-          "1) "
-              + Interface.class.getName()
-              + " is an interface, but interfaces have no static injection points.",
-          "at " + InjectorTest.class.getName(),
-          "configure");
+          "InjectorTest$Interface is an interface, but interfaces have no static injection points.",
+          "at InjectorTest$5.configure");
     }
   }
 
@@ -346,11 +342,9 @@ public class InjectorTest extends TestCase {
     } catch (ProvisionException expected) {
       assertContains(
           expected.getMessage(),
-          Tree.class.getName() + " doesn't provide instances of " + Money.class.getName(),
-          "while locating ",
-          Tree.class.getName(),
-          "while locating ",
-          Money.class.getName());
+          "InjectorTest$Tree doesn't provide instances of InjectorTest$Money.",
+          "while locating InjectorTest$Tree",
+          "while locating InjectorTest$Money");
     }
   }
 
@@ -361,9 +355,8 @@ public class InjectorTest extends TestCase {
     } catch (ConfigurationException expected) {
       assertContains(
           expected.getMessage(),
-          Tree.class.getName() + " doesn't extend " + PineTree.class.getName(),
-          "while locating ",
-          PineTree.class.getName());
+          "InjectorTest$Tree doesn't extend InjectorTest$PineTree.",
+          "while locating InjectorTest$PineTree");
     }
   }
 
@@ -436,13 +429,7 @@ public class InjectorTest extends TestCase {
                   void initialize(final Injector injector)
                       throws ExecutionException, InterruptedException {
                     Future<JustInTime> future =
-                        executorService.submit(
-                            new Callable<JustInTime>() {
-                              @Override
-                              public JustInTime call() throws Exception {
-                                return injector.getInstance(JustInTime.class);
-                              }
-                            });
+                        executorService.submit(() -> injector.getInstance(JustInTime.class));
                     got.set(future.get());
                   }
                 });

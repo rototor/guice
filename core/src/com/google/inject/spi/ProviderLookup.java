@@ -19,10 +19,13 @@ package com.google.inject.spi;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
+import com.google.common.base.MoreObjects;
+import com.google.common.base.Objects;
 import com.google.common.collect.ImmutableSet;
 import com.google.inject.Binder;
 import com.google.inject.Key;
 import com.google.inject.Provider;
+import com.google.inject.internal.Errors;
 import com.google.inject.util.Types;
 import java.util.Set;
 
@@ -124,5 +127,25 @@ public final class ProviderLookup<T> implements Element {
         return "Provider<" + getKey().getTypeLiteral() + ">";
       }
     };
+  }
+
+  @Override
+  public String toString() {
+    return MoreObjects.toStringHelper(ProviderLookup.class)
+        .add("dependency", dependency)
+        .add("source", Errors.convert(source))
+        .toString();
+  }
+
+  @Override
+  public boolean equals(Object obj) {
+    return obj instanceof ProviderLookup
+        && ((ProviderLookup<?>) obj).dependency.equals(dependency)
+        && ((ProviderLookup<?>) obj).source.equals(source);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hashCode(dependency, source);
   }
 }

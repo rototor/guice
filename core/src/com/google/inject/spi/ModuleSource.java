@@ -22,6 +22,7 @@ import com.google.inject.Module;
 import com.google.inject.internal.util.StackTraceElements;
 import com.google.inject.internal.util.StackTraceElements.InMemoryStackTraceElement;
 import java.util.List;
+import javax.annotation.Nullable;
 
 /**
  * Associated to a {@link Module module}, provides the module class name, the parent module {@link
@@ -37,6 +38,15 @@ final class ModuleSource {
   private final ModuleSource parent;
 
   /**
+   * Permit map created by the binder that installed this module.
+   *
+   * <p>The permit map is a binder-scoped object, but it's saved here because these maps have to
+   * outlive the binders that created them in order to be used at injector creation, and there isn't
+   * a 'BinderSource' object.
+   */
+  private final BindingSourceRestriction.PermitMap permitMap;
+
+  /**
    * The chunk of call stack that starts from the parent module {@link Module#configure(Binder)
    * configure(Binder)} call and ends just before the module {@link Module#configure(Binder)
    * configure(Binder)} method invocation. For a module without a parent module the chunk starts
@@ -47,31 +57,38 @@ final class ModuleSource {
   /**
    * Creates a new {@link ModuleSource} with a {@literal null} parent.
    *
-   * @param module the corresponding module
+   * @param moduleClass the corresponding module
    * @param partialCallStack the chunk of call stack that starts from the parent module {@link
    *     Module#configure(Binder) configure(Binder)} call and ends just before the module {@link
    *     Module#configure(Binder) configure(Binder)} method invocation
    */
-  ModuleSource(Object module, StackTraceElement[] partialCallStack) {
-    this(null, module, partialCallStack);
+  ModuleSource(
+      Class<?> moduleClass,
+      StackTraceElement[] partialCallStack,
+      BindingSourceRestriction.PermitMap permitMap) {
+    this(null, moduleClass, partialCallStack, permitMap);
   }
 
   /**
    * Creates a new {@link ModuleSource} Object.
    *
    * @param parent the parent module {@link ModuleSource source}
-   * @param module the corresponding module
+   * @param moduleClass the corresponding module
    * @param partialCallStack the chunk of call stack that starts from the parent module {@link
    *     Module#configure(Binder) configure(Binder)} call and ends just before the module {@link
    *     Module#configure(Binder) configure(Binder)} method invocation
    */
   private ModuleSource(
-      /* @Nullable */ ModuleSource parent, Object module, StackTraceElement[] partialCallStack) {
-    Preconditions.checkNotNull(module, "module cannot be null.");
+      @Nullable ModuleSource parent,
+      Class<?> moduleClass,
+      StackTraceElement[] partialCallStack,
+      BindingSourceRestriction.PermitMap permitMap) {
+    Preconditions.checkNotNull(moduleClass, "module cannot be null.");
     Preconditions.checkNotNull(partialCallStack, "partialCallStack cannot be null.");
     this.parent = parent;
-    this.moduleClassName = module.getClass().getName();
+    this.moduleClassName = moduleClass.getName();
     this.partialCallStack = StackTraceElements.convertToInMemoryStackTraceElement(partialCallStack);
+    this.permitMap = permitMap;
   }
 
   /**
@@ -101,13 +118,13 @@ final class ModuleSource {
   /**
    * Creates and returns a child {@link ModuleSource} corresponding to the {@link Module module}.
    *
-   * @param module the corresponding module
+   * @param moduleClass the corresponding module
    * @param partialCallStack the chunk of call stack that starts from the parent module {@link
    *     Module#configure(Binder) configure(Binder)} call and ends just before the module {@link
    *     Module#configure(Binder) configure(Binder)} method invocation
    */
-  ModuleSource createChild(Object module, StackTraceElement[] partialCallStack) {
-    return new ModuleSource(this, module, partialCallStack);
+  ModuleSource createChild(Class<?> moduleClass, StackTraceElement[] partialCallStack) {
+    return new ModuleSource(this, moduleClass, partialCallStack, permitMap);
   }
 
   /** Returns the parent module {@link ModuleSource source}. */
@@ -172,5 +189,10 @@ final class ModuleSource {
       cursor = cursor + chunkSize;
     }
     return callStack;
+  }
+
+  /** Returns the permit map created by the binder that installed this module. */
+  BindingSourceRestriction.PermitMap getPermitMap() {
+    return permitMap;
   }
 }

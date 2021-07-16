@@ -16,10 +16,12 @@
 
 package com.google.inject.throwingproviders;
 
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.inject.Asserts.assertContains;
 import static java.lang.annotation.ElementType.METHOD;
+import static java.lang.annotation.ElementType.TYPE;
 import static java.lang.annotation.RetentionPolicy.RUNTIME;
 
-import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
@@ -46,7 +48,6 @@ import com.google.inject.spi.Message;
 import com.google.inject.throwingproviders.ThrowingProviderBinder.Result;
 import java.io.IOException;
 import java.lang.annotation.Annotation;
-import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
@@ -70,14 +71,6 @@ public class CheckedProviderTest extends TestCase {
   @Retention(RUNTIME)
   @BindingAnnotation
   @interface NotExceptionScoping {};
-
-  private static final Function<Dependency<?>, Key<?>> DEPENDENCY_TO_KEY =
-      new Function<Dependency<?>, Key<?>>() {
-        @Override
-        public Key<?> apply(Dependency<?> from) {
-          return from.getKey();
-        }
-      };
 
   private final TypeLiteral<RemoteProvider<Foo>> remoteProviderOfFoo =
       new TypeLiteral<RemoteProvider<Foo>>() {};
@@ -596,8 +589,9 @@ public class CheckedProviderTest extends TestCase {
     // And make sure DependentRemoteProvider has the proper dependencies.
     hasDependencies = (HasDependencies) bindInjector.getBinding(DependentRemoteProvider.class);
     Set<Key<?>> dependencyKeys =
-        ImmutableSet.copyOf(
-            Iterables.transform(hasDependencies.getDependencies(), DEPENDENCY_TO_KEY));
+        hasDependencies.getDependencies().stream()
+            .map(Dependency::getKey)
+            .collect(toImmutableSet());
     assertEquals(
         ImmutableSet.<Key<?>>of(
             Key.get(String.class),
@@ -640,8 +634,9 @@ public class CheckedProviderTest extends TestCase {
             providesInjector.getBinding(
                 Iterables.getOnlyElement(hasDependencies.getDependencies()).getKey());
     Set<Key<?>> dependencyKeys =
-        ImmutableSet.copyOf(
-            Iterables.transform(hasDependencies.getDependencies(), DEPENDENCY_TO_KEY));
+        hasDependencies.getDependencies().stream()
+            .map(Dependency::getKey)
+            .collect(toImmutableSet());
     assertEquals(
         ImmutableSet.<Key<?>>of(
             Key.get(String.class),
@@ -687,8 +682,9 @@ public class CheckedProviderTest extends TestCase {
     // And DependentMockFoo is dependent on the goods.
     hasDependencies = (HasDependencies) cxtorInjector.getBinding(key);
     Set<Key<?>> dependencyKeys =
-        ImmutableSet.copyOf(
-            Iterables.transform(hasDependencies.getDependencies(), DEPENDENCY_TO_KEY));
+        hasDependencies.getDependencies().stream()
+            .map(Dependency::getKey)
+            .collect(toImmutableSet());
     assertEquals(
         ImmutableSet.<Key<?>>of(
             Key.get(String.class),
@@ -1381,8 +1377,8 @@ public class CheckedProviderTest extends TestCase {
     } catch (CreationException ce) {
       assertEquals(
           WrongThrowingProviderType.class.getName()
-              + " does not properly extend CheckedProvider, the first type parameter of CheckedProvider "
-              + "(java.lang.String) is not a generic type",
+              + " does not properly extend CheckedProvider, the first type parameter of"
+              + " CheckedProvider (java.lang.String) is not a generic type",
           Iterables.getOnlyElement(ce.getErrorMessages()).getMessage());
     }
   }
@@ -1531,12 +1527,9 @@ public class CheckedProviderTest extends TestCase {
           });
       fail();
     } catch (CreationException ce) {
-      assertEquals(
-          "Could not find a suitable constructor in "
-              + FailingProvider.class.getName()
-              + ". Classes must have either one (and only one) constructor annotated with @Inject"
-              + " or a zero-argument constructor that is not private.",
-          Iterables.getOnlyElement(ce.getErrorMessages()).getMessage());
+      assertContains(
+          ce.getMessage(),
+          "No injectable constructor for type CheckedProviderTest$FailingProvider.");
     }
   }
 
@@ -1645,14 +1638,13 @@ public class CheckedProviderTest extends TestCase {
     } catch (ProvisionException pe) {
       Message message = Iterables.getOnlyElement(pe.getErrorMessages());
       assertEquals(
-          "Error in custom provider, com.google.inject.OutOfScopeException: failure: "
-              + Key.get(Unscoped1.class),
+          "com.google.inject.OutOfScopeException: failure: " + Key.get(Unscoped1.class),
           message.getMessage());
     }
   }
 
   @ScopeAnnotation
-  @Target(ElementType.TYPE)
+  @Target({TYPE, METHOD})
   @Retention(RetentionPolicy.RUNTIME)
   private @interface BadScope {}
 

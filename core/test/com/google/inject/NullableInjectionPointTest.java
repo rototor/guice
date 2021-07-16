@@ -1,7 +1,8 @@
 package com.google.inject;
 
 import static com.google.inject.Asserts.assertContains;
-import static com.google.inject.Asserts.getDeclaringSourcePart;
+import static java.lang.annotation.ElementType.TYPE_USE;
+import static java.lang.annotation.RetentionPolicy.RUNTIME;
 
 import com.google.common.base.Optional;
 import com.google.inject.multibindings.OptionalBinder;
@@ -25,8 +26,8 @@ public class NullableInjectionPointTest extends TestCase {
     } catch (ProvisionException expected) {
       assertContains(
           expected.getMessage(),
-          "null returned by binding at " + getClass().getName(),
-          "the 1st parameter of " + FooConstructor.class.getName() + ".<init>(",
+          "null returned by binding at NullableInjectionPointTest$1.configure",
+          "the 1st parameter foo of NullableInjectionPointTest$FooConstructor.<init>(",
           "is not @Nullable");
     }
   }
@@ -38,8 +39,8 @@ public class NullableInjectionPointTest extends TestCase {
     } catch (ProvisionException expected) {
       assertContains(
           expected.getMessage(),
-          "null returned by binding at " + getClass().getName(),
-          "the 1st parameter of " + FooMethod.class.getName() + ".setFoo(",
+          "null returned by binding at NullableInjectionPointTest$1.configure",
+          "the 1st parameter foo of NullableInjectionPointTest$FooMethod.setFoo(",
           "is not @Nullable");
     }
   }
@@ -51,8 +52,8 @@ public class NullableInjectionPointTest extends TestCase {
     } catch (ProvisionException expected) {
       assertContains(
           expected.getMessage(),
-          "null returned by binding at " + getClass().getName(),
-          " but " + FooField.class.getName() + ".foo",
+          "null returned by binding at NullableInjectionPointTest$1.configure(",
+          " but NullableInjectionPointTest$FooField.foo",
           " is not @Nullable");
     }
   }
@@ -93,6 +94,22 @@ public class NullableInjectionPointTest extends TestCase {
     assertNull(nff.foo);
   }
 
+  public void testInjectNullIntoTypeUseNullableConstructor() {
+    TypeUseNullableFooConstructor nff =
+        createInjector().getInstance(TypeUseNullableFooConstructor.class);
+    assertNull(nff.foo);
+  }
+
+  public void testInjectNullIntoTypeUseNullableMethod() {
+    TypeUseNullableFooMethod nfm = createInjector().getInstance(TypeUseNullableFooMethod.class);
+    assertNull(nfm.foo);
+  }
+
+  public void testInjectNullIntoTypeUseNullableField() {
+    TypeUseNullableFooField nff = createInjector().getInstance(TypeUseNullableFooField.class);
+    assertNull(nff.foo);
+  }
+
   private Injector createInjector() {
     return Guice.createInjector(
         new AbstractModule() {
@@ -118,8 +135,7 @@ public class NullableInjectionPointTest extends TestCase {
       assertContains(
           expected.getMessage(),
           "Binding to null instances is not allowed.",
-          "at " + getClass().getName(),
-          getDeclaringSourcePart(getClass()));
+          "at NullableInjectionPointTest$2.configure(");
     }
   }
 
@@ -180,8 +196,7 @@ public class NullableInjectionPointTest extends TestCase {
       fail();
     } catch (ProvisionException expected) {
       assertContains(
-          expected.getMessage(),
-          "null returned by binding " + "at com.google.inject.NullableInjectionPointTest");
+          expected.getMessage(), "null returned by binding at NullableInjectionPointTest");
     }
   }
 
@@ -264,6 +279,34 @@ public class NullableInjectionPointTest extends TestCase {
 
     @Inject
     void setFoo(@Namespace.Nullable Foo foo) {
+      this.foo = foo;
+    }
+  }
+
+  private static class TypeUse {
+    @Retention(RUNTIME)
+    @Target(TYPE_USE)
+    private @interface Nullable {}
+  }
+
+  static class TypeUseNullableFooConstructor {
+    Foo foo;
+
+    @Inject
+    TypeUseNullableFooConstructor(@TypeUse.Nullable Foo foo) {
+      this.foo = foo;
+    }
+  }
+
+  static class TypeUseNullableFooField {
+    @Inject @TypeUse.Nullable Foo foo;
+  }
+
+  static class TypeUseNullableFooMethod {
+    Foo foo;
+
+    @Inject
+    void setFoo(@TypeUse.Nullable Foo foo) {
       this.foo = foo;
     }
   }

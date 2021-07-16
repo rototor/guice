@@ -21,7 +21,6 @@ import com.google.common.base.Preconditions;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.RemovalCause;
-import com.google.common.cache.RemovalListener;
 import com.google.common.cache.RemovalNotification;
 import com.google.common.collect.LinkedHashMultiset;
 import com.google.common.collect.Maps;
@@ -48,30 +47,20 @@ final class WeakKeySet {
   private final Object lock;
 
   /**
-   * Tracks child injector lifetimes and evicts blacklisted keys/sources after the child injector is
+   * Tracks child injector lifetimes and evicts banned keys/sources after the child injector is
    * garbage collected.
    */
-  private final Cache<State, Set<KeyAndSource>> evictionCache =
-      CacheBuilder.newBuilder()
-          .weakKeys()
-          .removalListener(
-              new RemovalListener<State, Set<KeyAndSource>>() {
-                @Override
-                public void onRemoval(RemovalNotification<State, Set<KeyAndSource>> notification) {
-                  Preconditions.checkState(RemovalCause.COLLECTED.equals(notification.getCause()));
+  private final Cache<InjectorBindingData, Set<KeyAndSource>> evictionCache =
+      CacheBuilder.newBuilder().weakKeys().removalListener(this::cleanupOnRemoval).build();
 
-                  cleanUpForCollectedState(notification.getValue());
-                }
-              })
-          .build();
+  private void cleanupOnRemoval(
+      RemovalNotification<InjectorBindingData, Set<KeyAndSource>> notification) {
+    Preconditions.checkState(RemovalCause.COLLECTED.equals(notification.getCause()));
 
-  /**
-   * There may be multiple child injectors blacklisting a certain key so only remove the source
-   * that's relevant.
-   */
-  private void cleanUpForCollectedState(Set<KeyAndSource> keysAndSources) {
+    // There may be multiple child injectors banning a certain key so only remove the source
+    // that's relevant.
     synchronized (lock) {
-      for (KeyAndSource keyAndSource : keysAndSources) {
+      for (KeyAndSource keyAndSource : notification.getValue()) {
         Multiset<Object> set = backingMap.get(keyAndSource.key);
         if (set != null) {
           set.remove(keyAndSource.source);
@@ -87,7 +76,7 @@ final class WeakKeySet {
     this.lock = lock;
   }
 
-  public void add(Key<?> key, State state, Object source) {
+  public void add(Key<?> key, InjectorBindingData state, Object source) {
     if (backingMap == null) {
       backingMap = Maps.newHashMap();
     }
@@ -96,16 +85,11 @@ final class WeakKeySet {
     if (source instanceof Class || source == SourceProvider.UNKNOWN_SOURCE) {
       source = null;
     }
-    Multiset<Object> sources = backingMap.get(key);
-    if (sources == null) {
-      sources = LinkedHashMultiset.create();
-      backingMap.put(key, sources);
-    }
     Object convertedSource = Errors.convert(source);
-    sources.add(convertedSource);
+    backingMap.computeIfAbsent(key, k -> LinkedHashMultiset.create()).add(convertedSource);
 
     // Avoid all the extra work if we can.
-    if (state.parent() != State.NONE) {
+    if (state.parent().isPresent()) {
       Set<KeyAndSource> keyAndSources = evictionCache.getIfPresent(state);
       if (keyAndSources == null) {
         evictionCache.put(state, keyAndSources = Sets.newHashSet());

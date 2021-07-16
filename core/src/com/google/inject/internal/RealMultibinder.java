@@ -5,7 +5,6 @@ import static com.google.inject.internal.Errors.checkConfiguration;
 import static com.google.inject.internal.Errors.checkNotNull;
 import static com.google.inject.name.Names.named;
 
-import com.google.common.base.Objects;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
@@ -24,6 +23,7 @@ import com.google.inject.multibindings.MultibinderBinding;
 import com.google.inject.multibindings.MultibindingsTargetVisitor;
 import com.google.inject.spi.BindingTargetVisitor;
 import com.google.inject.spi.Dependency;
+import com.google.inject.spi.Message;
 import com.google.inject.spi.ProviderInstanceBinding;
 import com.google.inject.spi.ProviderWithExtensionVisitor;
 import com.google.inject.util.Types;
@@ -31,6 +31,7 @@ import java.lang.reflect.Type;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * The actual multibinder plays several roles:
@@ -81,6 +82,13 @@ public final class RealMultibinder<T> implements Module {
     return (TypeLiteral<Collection<javax.inject.Provider<T>>>) TypeLiteral.get(type);
   }
 
+  @SuppressWarnings("unchecked")
+  static <T> TypeLiteral<Set<? extends T>> setOfExtendsOf(TypeLiteral<T> elementType) {
+    Type extendsType = Types.subtypeOf(elementType.getType());
+    Type setOfExtendsType = Types.setOf(extendsType);
+    return (TypeLiteral<Set<? extends T>>) TypeLiteral.get(setOfExtendsType);
+  }
+
   private final BindingSelection<T> bindingSelection;
   private final Binder binder;
 
@@ -92,9 +100,17 @@ public final class RealMultibinder<T> implements Module {
   @Override
   public void configure(Binder binder) {
     checkConfiguration(!bindingSelection.isInitialized(), "Multibinder was already initialized");
+
+    RealMultibinderProvider<T> setProvider = new RealMultibinderProvider<T>(bindingSelection);
+    // Bind the setKey to the provider wrapped w/ extension support.
     binder
         .bind(bindingSelection.getSetKey())
-        .toProvider(new RealMultibinderProvider<T>(bindingSelection));
+        .toProvider(new ExtensionRealMultibinderProvider<>(setProvider));
+    // Bind the <? extends T> to the provider w/o extension support.
+    // It's important the exactly one binding implement the extension support and show
+    // the other keys as aliases, to adhere to the extension contract.
+    binder.bind(bindingSelection.getSetOfExtendsKey()).toProvider(setProvider);
+
     Provider<Collection<Provider<T>>> collectionOfProvidersProvider =
         new RealMultibinderCollectionOfProvidersProvider<T>(bindingSelection);
     binder
@@ -148,15 +164,19 @@ public final class RealMultibinder<T> implements Module {
     return bindingSelection.containsElement(element);
   }
 
-  private static final class RealMultibinderProvider<T>
-      extends InternalProviderInstanceBindingImpl.Factory<Set<T>>
-      implements ProviderWithExtensionVisitor<Set<T>>, MultibinderBinding<Set<T>> {
-    private final BindingSelection<T> bindingSelection;
-    private List<Binding<T>> bindings;
-    private SingleParameterInjector<T>[] injectors;
-    private boolean permitDuplicates;
+  /**
+   * Base implement of {@link InternalProviderInstanceBindingImpl.Factory} that works based on a
+   * {@link BindingSelection}, allowing provider instances for various bindings to be implemented
+   * with less duplication.
+   */
+  private abstract static class BaseFactory<ValueT, ProvidedT>
+      extends InternalProviderInstanceBindingImpl.Factory<ProvidedT> {
+    final Function<BindingSelection<ValueT>, ImmutableSet<Dependency<?>>> dependenciesFn;
+    final BindingSelection<ValueT> bindingSelection;
 
-    RealMultibinderProvider(BindingSelection<T> bindingSelection) {
+    BaseFactory(
+        BindingSelection<ValueT> bindingSelection,
+        Function<BindingSelection<ValueT>, ImmutableSet<Dependency<?>>> dependenciesFn) {
       // While Multibinders only depend on bindings created in modules so we could theoretically
       // initialize eagerly, they also depend on
       // 1. findBindingsByType returning results
@@ -164,23 +184,58 @@ public final class RealMultibinder<T> implements Module {
       // neither of those is available during eager initialization, so we use DELAYED
       super(InitializationTiming.DELAYED);
       this.bindingSelection = bindingSelection;
-    }
-
-    @Override
-    public Set<Dependency<?>> getDependencies() {
-      return bindingSelection.getDependencies();
+      this.dependenciesFn = dependenciesFn;
     }
 
     @Override
     void initialize(InjectorImpl injector, Errors errors) throws ErrorsException {
       bindingSelection.initialize(injector, errors);
-      this.bindings = bindingSelection.getBindings();
-      this.injectors = bindingSelection.getParameterInjectors();
-      this.permitDuplicates = bindingSelection.permitsDuplicates();
+      doInitialize();
+    }
+
+    abstract void doInitialize();
+
+    @Override
+    public Set<Dependency<?>> getDependencies() {
+      return dependenciesFn.apply(bindingSelection);
     }
 
     @Override
-    protected Set<T> doProvision(InternalContext context, Dependency<?> dependency)
+    public boolean equals(Object obj) {
+      return getClass().isInstance(obj)
+          && bindingSelection.equals(((BaseFactory<?, ?>) obj).bindingSelection);
+    }
+
+    @Override
+    public int hashCode() {
+      return bindingSelection.hashCode();
+    }
+  }
+
+  /**
+   * Provider instance implementation that provides the actual set of values. This is parameterized
+   * so it can be used to supply a Set<T> and Set<? extends T>, the latter being useful for Kotlin
+   * support.
+   */
+  private static final class RealMultibinderProvider<T> extends BaseFactory<T, Set<T>> {
+    List<Binding<T>> bindings;
+    SingleParameterInjector<T>[] injectors;
+    boolean permitDuplicates;
+
+    RealMultibinderProvider(BindingSelection<T> bindingSelection) {
+      // Note: method reference doesn't work for the 2nd arg for some reason when compiling on java8
+      super(bindingSelection, bs -> bs.getDependencies());
+    }
+
+    @Override
+    protected void doInitialize() {
+      bindings = bindingSelection.getBindings();
+      injectors = bindingSelection.getParameterInjectors();
+      permitDuplicates = bindingSelection.permitsDuplicates();
+    }
+
+    @Override
+    protected ImmutableSet<T> doProvision(InternalContext context, Dependency<?> dependency)
         throws InternalProvisionException {
       SingleParameterInjector<T>[] localInjectors = injectors;
       if (localInjectors == null) {
@@ -204,14 +259,52 @@ public final class RealMultibinder<T> implements Module {
       ImmutableSet<T> set = ImmutableSet.copyOf(values);
       // There are fewer items in the set than the array.  Figure out which one got dropped.
       if (!permitDuplicates && set.size() < values.length) {
-        throw newDuplicateValuesException(set, values);
+        throw newDuplicateValuesException(values);
       }
       return set;
     }
 
     private InternalProvisionException newNullEntryException(int i) {
       return InternalProvisionException.create(
-          "Set injection failed due to null element bound at: %s", bindings.get(i).getSource());
+          ErrorId.NULL_ELEMENT_IN_SET,
+          "Set injection failed due to null element bound at: %s",
+          bindings.get(i).getSource());
+    }
+
+    private InternalProvisionException newDuplicateValuesException(T[] values) {
+      Message message =
+          new Message(
+              GuiceInternal.GUICE_INTERNAL,
+              ErrorId.DUPLICATE_ELEMENT,
+              new DuplicateElementError<T>(
+                  bindingSelection.getSetKey(), bindings, values, ImmutableList.of(getSource())));
+      return new InternalProvisionException(message);
+    }
+  }
+
+  /**
+   * Implementation of BaseFactory that exposes details about the multibinder through the extension
+   * SPI.
+   */
+  private static final class ExtensionRealMultibinderProvider<T> extends BaseFactory<T, Set<T>>
+      implements ProviderWithExtensionVisitor<Set<T>>, MultibinderBinding<Set<T>> {
+    final RealMultibinderProvider<T> delegate;
+
+    ExtensionRealMultibinderProvider(RealMultibinderProvider<T> delegate) {
+      // Note: method reference doesn't work for the 2nd arg for some reason when compiling on java8
+      super(delegate.bindingSelection, bs -> bs.getDependencies());
+      this.delegate = delegate;
+    }
+
+    @Override
+    protected void doInitialize() {
+      delegate.doInitialize();
+    }
+
+    @Override
+    protected ImmutableSet<T> doProvision(InternalContext context, Dependency<?> dependency)
+        throws InternalProvisionException {
+      return delegate.doProvision(context, dependency);
     }
 
     @SuppressWarnings("unchecked")
@@ -225,62 +318,17 @@ public final class RealMultibinder<T> implements Module {
       }
     }
 
-    private InternalProvisionException newDuplicateValuesException(
-        ImmutableSet<T> set, T[] values) {
-      // TODO(lukes): consider reporting all duplicate values, the easiest way would be to rebuild
-      // a new set and detect dupes as we go
-      // Find the duplicate binding
-      // To do this we take advantage of the fact that set, values and bindings all have the same
-      // ordering for a non-empty prefix of the set.
-      // First we scan for the first item dropped from the set.
-      int newBindingIndex = 0;
-      for (T item : set) {
-        if (item != values[newBindingIndex]) {
-          break;
-        }
-        newBindingIndex++;
-      }
-      // once we exit the loop newBindingIndex will point at the first item in values that was
-      // dropped.
-
-      Binding<T> newBinding = bindings.get(newBindingIndex);
-      T newValue = values[newBindingIndex];
-      // Now we scan again to find the index of the value, we are guaranteed to find it.
-      int oldBindingIndex = set.asList().indexOf(newValue);
-      T oldValue = values[oldBindingIndex];
-      Binding<T> duplicateBinding = bindings.get(oldBindingIndex);
-      String oldString = oldValue.toString();
-      String newString = newValue.toString();
-      if (Objects.equal(oldString, newString)) {
-        // When the value strings match, just show the source of the bindings
-        return InternalProvisionException.create(
-            "Set injection failed due to duplicated element \"%s\""
-                + "\n    Bound at %s\n    Bound at %s",
-            newValue, duplicateBinding.getSource(), newBinding.getSource());
-      } else {
-        // When the value strings don't match, include them both as they may be useful for debugging
-        return InternalProvisionException.create(
-            "Set injection failed due to multiple elements comparing equal:"
-                + "\n    \"%s\"\n        bound at %s"
-                + "\n    \"%s\"\n        bound at %s",
-            oldValue, duplicateBinding.getSource(), newValue, newBinding.getSource());
-      }
-    }
-
-    @Override
-    public boolean equals(Object obj) {
-      return obj instanceof RealMultibinderProvider
-          && bindingSelection.equals(((RealMultibinderProvider<?>) obj).bindingSelection);
-    }
-
-    @Override
-    public int hashCode() {
-      return bindingSelection.hashCode();
-    }
-
     @Override
     public Key<Set<T>> getSetKey() {
       return bindingSelection.getSetKey();
+    }
+
+    @Override
+    public ImmutableSet<Key<?>> getAlternateSetKeys() {
+      return ImmutableSet.of(
+          (Key<?>) bindingSelection.getCollectionOfProvidersKey(),
+          (Key<?>) bindingSelection.getCollectionOfJavaxProvidersKey(),
+          (Key<?>) bindingSelection.getSetOfExtendsKey());
     }
 
     @Override
@@ -304,6 +352,34 @@ public final class RealMultibinder<T> implements Module {
     }
   }
 
+  /**
+   * Implementation of BaseFactory that exposes a collection of providers of the values in the set.
+   */
+  private static final class RealMultibinderCollectionOfProvidersProvider<T>
+      extends BaseFactory<T, Collection<Provider<T>>> {
+    ImmutableList<Provider<T>> providers;
+
+    RealMultibinderCollectionOfProvidersProvider(BindingSelection<T> bindingSelection) {
+      // Note: method reference doesn't work for the 2nd arg for some reason when compiling on java8
+      super(bindingSelection, bs -> bs.getProviderDependencies());
+    }
+
+    @Override
+    protected void doInitialize() {
+      ImmutableList.Builder<Provider<T>> providers = ImmutableList.builder();
+      for (Binding<T> binding : bindingSelection.getBindings()) {
+        providers.add(binding.getProvider());
+      }
+      this.providers = providers.build();
+    }
+
+    @Override
+    protected ImmutableList<Provider<T>> doProvision(
+        InternalContext context, Dependency<?> dependency) {
+      return providers;
+    }
+  }
+
   private static final class BindingSelection<T> {
     // prior to initialization we declare just a dependency on the injector, but as soon as we are
     // initialized we swap to dependencies on the elements.
@@ -316,6 +392,7 @@ public final class RealMultibinder<T> implements Module {
     private String setName;
     private Key<Collection<Provider<T>>> collectionOfProvidersKey;
     private Key<Collection<javax.inject.Provider<T>>> collectionOfJavaxProvidersKey;
+    private Key<Set<? extends T>> setOfExtendsKey;
     private Key<Boolean> permitDuplicatesKey;
 
     private boolean isInitialized;
@@ -441,6 +518,14 @@ public final class RealMultibinder<T> implements Module {
       return local;
     }
 
+    Key<Set<? extends T>> getSetOfExtendsKey() {
+      Key<Set<? extends T>> local = setOfExtendsKey;
+      if (local == null) {
+        local = setOfExtendsKey = setKey.ofType(setOfExtendsOf(elementType));
+      }
+      return local;
+    }
+
     boolean isInitialized() {
       return isInitialized;
     }
@@ -480,7 +565,8 @@ public final class RealMultibinder<T> implements Module {
             || binding.getKey().equals(getPermitDuplicatesKey())
             || binding.getKey().equals(setKey)
             || binding.getKey().equals(collectionOfProvidersKey)
-            || binding.getKey().equals(collectionOfJavaxProvidersKey);
+            || binding.getKey().equals(collectionOfJavaxProvidersKey)
+            || binding.getKey().equals(setOfExtendsKey);
       } else {
         return false;
       }
@@ -524,51 +610,6 @@ public final class RealMultibinder<T> implements Module {
   @Override
   public int hashCode() {
     return bindingSelection.hashCode();
-  }
-
-  private static final class RealMultibinderCollectionOfProvidersProvider<T>
-      extends InternalProviderInstanceBindingImpl.Factory<Collection<Provider<T>>> {
-
-    private final BindingSelection<T> bindingSelection;
-    private ImmutableList<Provider<T>> collectionOfProviders;
-
-    RealMultibinderCollectionOfProvidersProvider(BindingSelection<T> bindingSelection) {
-      super(InitializationTiming.DELAYED); // See comment in RealMultibinderProvider
-      this.bindingSelection = bindingSelection;
-    }
-
-    @Override
-    void initialize(InjectorImpl injector, Errors errors) throws ErrorsException {
-      bindingSelection.initialize(injector, errors);
-      ImmutableList.Builder<Provider<T>> providers = ImmutableList.builder();
-      for (Binding<T> binding : bindingSelection.getBindings()) {
-        providers.add(binding.getProvider());
-      }
-      this.collectionOfProviders = providers.build();
-    }
-
-    @Override
-    protected Collection<Provider<T>> doProvision(
-        InternalContext context, Dependency<?> dependency) {
-      return collectionOfProviders;
-    }
-
-    @Override
-    public Set<Dependency<?>> getDependencies() {
-      return bindingSelection.getProviderDependencies();
-    }
-
-    @Override
-    public boolean equals(Object obj) {
-      return obj instanceof RealMultibinderCollectionOfProvidersProvider
-          && bindingSelection.equals(
-              ((RealMultibinderCollectionOfProvidersProvider<?>) obj).bindingSelection);
-    }
-
-    @Override
-    public int hashCode() {
-      return bindingSelection.hashCode();
-    }
   }
 
   /**
